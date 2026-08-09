@@ -3,104 +3,74 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <title>{{.PageTitle}}</title>
+  <script>(function(){try{var p=JSON.parse(localStorage.getItem("datashelf-ui-preferences-v1"))||{},a=["azure","forest","terracotta"].indexOf(p.accent)>=0?p.accent:"azure",t=["light","dark","system"].indexOf(p.theme)>=0?p.theme:"system";document.documentElement.dataset.accent=a;if(t!=="system"){document.documentElement.dataset.theme=t}}catch(_){}}());</script>
   <style>
-    :root { color: #162234; background: #f4f7fb; font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; line-height: 1.5; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-width: 320px; background: radial-gradient(circle at 15% -20%, #dceaff 0, transparent 32rem), #f4f7fb; }
-    a { color: inherit; }
-    a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid #1f73df; outline-offset: 3px; }
-    main { width: min(1120px, 100%); margin: 0 auto; padding: 40px 24px 64px; }
-    .site-header { display: flex; align-items: start; justify-content: space-between; gap: 20px; margin-bottom: 28px; }
-    h1 { margin: 0; font-size: clamp(1.75rem, 4vw, 2.5rem); line-height: 1.2; letter-spacing: -.035em; }
-    h2 { margin: 0; font-size: 1.125rem; }
-    p { margin: 0; }
-    .eyebrow, .meta, .empty-copy { color: #64748b; }
-    .eyebrow { margin-bottom: 6px; font-size: .875rem; font-weight: 650; letter-spacing: .03em; }
-    .toolbar, .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-    .toolbar { margin: 0 0 20px; }
-    .sort-link, .back-link { border: 1px solid #d9e1ec; border-radius: 999px; padding: 7px 12px; background: #fff; color: #46556a; text-decoration: none; font-size: .875rem; }
-    .sort-link[aria-current="true"] { border-color: #1669c9; background: #eaf3ff; color: #0756ae; font-weight: 700; }
-    .app-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 16px; }
-    .card, .panel, .directory-list { background: rgba(255,255,255,.96); border: 1px solid #dce4ef; border-radius: 16px; box-shadow: 0 8px 24px rgba(24, 44, 74, .05); }
-    .app-card { display: grid; gap: 14px; min-height: 190px; padding: 20px; color: inherit; text-decoration: none; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
-    .app-card:hover { border-color: #8fbbe8; box-shadow: 0 14px 28px rgba(24, 80, 138, .12); transform: translateY(-2px); }
-    .card-top, .app-footer, .directory-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .app-name, .entry-name { min-width: 0; overflow-wrap: anywhere; font-weight: 720; }
-    .description { color: #4c5c71; overflow-wrap: anywhere; }
-    .status { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; border-radius: 999px; padding: 4px 8px; background: #eef4fb; color: #486078; font-size: .75rem; font-weight: 700; white-space: nowrap; }
-    .status.locked { background: #fff1ed; color: #a33d22; }
-    .status.protected { background: #fff8e6; color: #8b5d00; }
-    .crumbs { margin-bottom: 18px; font-size: .9rem; color: #52657d; }
-    .crumbs a { border-radius: 4px; }
-    .crumb-separator { color: #94a3b8; }
-    .directory-heading { margin: 0 0 18px; }
-    .directory-list { overflow: hidden; }
-    .directory-list ul { padding: 0; margin: 0; list-style: none; }
-    .entry + .entry { border-top: 1px solid #e7edf4; }
-    .entry a { display: grid; grid-template-columns: minmax(0, 1fr) 100px 104px 142px; gap: 16px; align-items: center; padding: 15px 20px; color: inherit; text-decoration: none; }
-    .entry a:hover { background: #f5f9fe; }
-    .entry-type, .entry-size, .entry-modified { color: #64748b; font-size: .875rem; }
-    .entry-type { font-weight: 650; }
-    .empty { padding: 40px 24px; text-align: center; }
-    .empty-icon { display: grid; place-items: center; width: 44px; height: 44px; margin: 0 auto 12px; border-radius: 50%; background: #eaf3ff; color: #1968c3; font-size: 1.25rem; }
-    .panel { width: min(460px, 100%); margin: clamp(24px, 8vh, 88px) auto 0; padding: clamp(24px, 5vw, 36px); }
-    .panel > * + * { margin-top: 16px; }
-    .notice { display: flex; gap: 10px; padding: 12px 14px; border: 1px solid #ffd2c8; border-radius: 10px; background: #fff5f2; color: #8b321f; }
-    label { display: block; color: #334155; font-size: .925rem; font-weight: 700; }
-    input, button { width: 100%; min-height: 46px; margin-top: 7px; border-radius: 9px; font: inherit; }
-    input { border: 1px solid #b9c7d8; padding: 10px 12px; background: #fff; color: #162234; }
-    button { border: 1px solid #0b5daf; padding: 10px 16px; background: #1268c4; color: #fff; font-weight: 720; cursor: pointer; }
-    button:hover { background: #075aaf; }
-    .form-help { color: #64748b; font-size: .875rem; }
-    @media (max-width: 680px) { main { padding: 28px 16px 48px; } .site-header { display: block; } .site-header .toolbar { margin-top: 18px; } .entry a { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 14px 16px; } .entry-type, .entry-size, .entry-modified { font-size: .8rem; } .entry-type { grid-column: 1; } .entry-size, .entry-modified { grid-column: 2; text-align: right; } }
-    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+    :root { --bg:#f4f7fb; --surface:rgba(255,255,255,.96); --subtle:#f5f9fe; --ink:#162234; --text:#4c5c71; --muted:#64748b; --border:#dce4ef; --primary:#1268c4; --primary-hover:#075aaf; --focus:#1f73df; --active-bg:#eaf3ff; --active-ink:#0756ae; --danger:#a33d22; --warning:#8b5d00; --shadow:0 8px 24px rgba(24,44,74,.05); color:#162234; background:#f4f7fb; font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif; line-height:1.5; }
+    :root[data-accent="forest"] { --primary:#286a4b; --primary-hover:#195438; --focus:#157347; --active-bg:#e6f4ea; --active-ink:#195438; }
+    :root[data-accent="terracotta"] { --primary:#b84a27; --primary-hover:#943616; --focus:#b74620; --active-bg:#ffebe4; --active-ink:#943616; }
+    :root[data-theme="dark"] { --bg:#111a26; --surface:#172231; --subtle:#1d2a3a; --ink:#edf4fb; --text:#c4d0dd; --muted:#9aabba; --border:#304256; --primary:#74b7ff; --primary-hover:#9acaff; --focus:#9acaff; --active-bg:#153253; --active-ink:#c1e0ff; --danger:#ffae9b; --warning:#ffd185; --shadow:none; color:#edf4fb; background:#111a26; }
+    :root[data-theme="dark"][data-accent="forest"] { --primary:#7bd6a4; --primary-hover:#a4eac3; --focus:#a4eac3; --active-bg:#153c2a; --active-ink:#c1f3d5; }
+    :root[data-theme="dark"][data-accent="terracotta"] { --primary:#ffb092; --primary-hover:#ffcfbb; --focus:#ffcfbb; --active-bg:#512619; --active-ink:#ffdbcc; }
+    @media (prefers-color-scheme:dark) { :root:not([data-theme]) { --bg:#111a26; --surface:#172231; --subtle:#1d2a3a; --ink:#edf4fb; --text:#c4d0dd; --muted:#9aabba; --border:#304256; --primary:#74b7ff; --primary-hover:#9acaff; --focus:#9acaff; --active-bg:#153253; --active-ink:#c1e0ff; --danger:#ffae9b; --warning:#ffd185; --shadow:none; color:#edf4fb; background:#111a26; } :root:not([data-theme])[data-accent="forest"] { --primary:#7bd6a4; --primary-hover:#a4eac3; --focus:#a4eac3; --active-bg:#153c2a; --active-ink:#c1f3d5; } :root:not([data-theme])[data-accent="terracotta"] { --primary:#ffb092; --primary-hover:#ffcfbb; --focus:#ffcfbb; --active-bg:#512619; --active-ink:#ffdbcc; } }
+    * { box-sizing:border-box; }
+    body { min-width:320px; margin:0; background:radial-gradient(circle at 15% -20%,color-mix(in srgb,var(--primary) 16%,transparent) 0,transparent 32rem),var(--bg); color:var(--ink); }
+    a { color:inherit; } a:focus-visible,button:focus-visible,input:focus-visible { outline:3px solid var(--focus); outline-offset:3px; }
+    main { width:min(1120px,100%); margin:0 auto; padding:40px 24px 64px; }
+    h1 { margin:0; font-size:clamp(1.75rem,4vw,2.5rem); line-height:1.2; letter-spacing:-.035em; } h2 { margin:0; font-size:1.125rem; } p { margin:0; }
+    .site-header,.directory-heading,.card-top,.app-footer,.modal-head,.modal-foot { display:flex; align-items:center; justify-content:space-between; gap:12px; } .site-header { align-items:start; margin-bottom:28px; }
+    .eyebrow,.meta,.empty-copy,.form-help,.preview-help { color:var(--muted); } .eyebrow { margin-bottom:6px; font-size:.875rem; font-weight:650; letter-spacing:.03em; }
+    .toolbar,.crumbs,.appearance { display:flex; flex-wrap:wrap; align-items:center; gap:8px; } .toolbar { margin:0 0 20px; } .appearance { justify-content:end; margin-top:10px; }
+    .sort-link,.back-link,.appearance button,.entry-action,.modal-control { min-height:38px; border:1px solid var(--border); border-radius:9px; padding:7px 12px; background:var(--surface); color:var(--text); text-decoration:none; font:inherit; font-size:.875rem; cursor:pointer; }
+    .sort-link[aria-current="true"],.appearance button[aria-pressed="true"] { border-color:var(--primary); background:var(--active-bg); color:var(--active-ink); font-weight:700; }
+    .appearance button { min-height:44px; } .swatch { display:inline-block; width:.72em; height:.72em; margin-right:5px; border-radius:50%; background:currentColor; }
+    .app-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:16px; } .card,.panel,.directory-list { background:var(--surface); border:1px solid var(--border); border-radius:16px; box-shadow:var(--shadow); }
+    .app-card { display:grid; gap:14px; min-height:190px; padding:20px; color:inherit; text-decoration:none; transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease; } .app-card:hover { border-color:var(--primary); box-shadow:0 14px 28px color-mix(in srgb,var(--primary) 18%,transparent); transform:translateY(-2px); }
+    .app-name,.entry-name { min-width:0; overflow-wrap:anywhere; font-weight:720; } .description { color:var(--text); overflow-wrap:anywhere; }
+    .status { display:inline-flex; flex:0 0 auto; align-items:center; gap:5px; border-radius:999px; padding:4px 8px; background:var(--subtle); color:var(--text); font-size:.75rem; font-weight:700; white-space:nowrap; } .status.locked { background:#fff1ed; color:var(--danger); } .status.protected { background:#fff8e6; color:var(--warning); }
+    .guide { margin-top:18px; padding:16px; border-radius:12px; background:var(--subtle); text-align:left; } .guide ol { margin:8px 0 0; padding-left:22px; }
+    .crumbs { margin-bottom:18px; color:var(--text); font-size:.9rem; } .crumbs a { border-radius:4px; color:var(--primary); } .crumb-separator { color:var(--muted); } .directory-heading { align-items:end; margin:0 0 18px; }
+    .directory-list { overflow:hidden; } .directory-list ul { padding:0; margin:0; list-style:none; } .entry + .entry { border-top:1px solid var(--border); } .entry { display:grid; grid-template-columns:minmax(0,1fr) 100px 104px 142px 126px; gap:16px; align-items:center; padding:15px 20px; } .entry:hover { background:var(--subtle); }
+    .entry-link { color:inherit; text-decoration:none; } .entry-type,.entry-size,.entry-modified { color:var(--muted); font-size:.875rem; } .entry-type { font-weight:650; } .entry-action { width:max-content; color:var(--primary); font-weight:700; } .entry-action[hidden] { display:none; }
+    .empty { padding:40px 24px; text-align:center; } .empty-icon { display:grid; place-items:center; width:44px; height:44px; margin:0 auto 12px; border-radius:50%; background:var(--active-bg); color:var(--primary); font-size:1.25rem; }
+    .panel { width:min(520px,100%); margin:clamp(24px,8vh,88px) auto 0; padding:clamp(24px,5vw,36px); } .panel > * + * { margin-top:16px; }
+    .notice { display:flex; gap:10px; padding:12px 14px; border:1px solid #ffd2c8; border-radius:10px; background:#fff5f2; color:var(--danger); } label { display:block; color:var(--ink); font-size:.925rem; font-weight:700; }
+    input,button[type="submit"] { width:100%; min-height:46px; margin-top:7px; border-radius:9px; font:inherit; } input { border:1px solid var(--border); padding:10px 12px; background:var(--surface); color:var(--ink); } button[type="submit"] { border:1px solid var(--primary); padding:10px 16px; background:var(--primary); color:#fff; font-weight:720; cursor:pointer; } button[type="submit"]:hover { background:var(--primary-hover); }
+    .preview-dialog { width:min(100% - 32px,960px); max-height:min(90vh,860px); padding:0; border:0; border-radius:16px; background:var(--surface); color:var(--ink); box-shadow:0 24px 64px rgba(0,0,0,.4); } .preview-dialog::backdrop { background:rgba(9,18,30,.68); } .preview-dialog[open] { display:block; } .modal-head { align-items:start; padding:18px 20px; border-bottom:1px solid var(--border); } .modal-close { width:44px; min-height:44px; padding:0; font-size:1.6rem; line-height:1; } .preview-area { min-height:200px; max-height:calc(90vh - 166px); overflow:auto; padding:16px; background:var(--subtle); } .preview-image { display:block; width:100%; max-height:calc(90vh - 220px); object-fit:contain; } .preview-document { display:block; width:100%; min-height:440px; border:0; background:#fff; } .preview-text { margin:0; padding:16px; overflow:auto; color:var(--ink); font:14px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace; white-space:pre-wrap; overflow-wrap:anywhere; } .modal-foot { padding:12px 20px; } .preview-nav { display:flex; gap:8px; } .modal-control:disabled { opacity:.5; cursor:not-allowed; }
+    .visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+    @media (max-width:680px) { main { padding:28px 16px 48px; } .site-header,.directory-heading { display:block; } .site-header .toolbar { margin-top:18px; } .appearance { justify-content:start; } .entry { grid-template-columns:minmax(0,1fr) auto; gap:6px 12px; padding:14px 16px; } .entry-link { grid-column:1/-1; } .entry-type { grid-column:1; } .entry-size,.entry-modified { grid-column:2; text-align:right; } .entry-action { grid-column:1/-1; padding:6px 0; min-height:32px; border:0; background:transparent; } .modal-foot { align-items:start; flex-direction:column; } .preview-document { min-height:360px; } }
+    @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto !important; transition-duration:.01ms !important; animation-duration:.01ms !important; } }
   </style>
 </head>
 <body><main>{{end}}
 
+{{define "appearance-controls"}}<section class="appearance" aria-label="外观设置"><span class="visually-hidden">色系</span><button type="button" data-accent="azure" aria-pressed="true"><span class="swatch" aria-hidden="true"></span>湛蓝</button><button type="button" data-accent="forest" aria-pressed="false"><span class="swatch" aria-hidden="true"></span>松绿</button><button type="button" data-accent="terracotta" aria-pressed="false"><span class="swatch" aria-hidden="true"></span>陶土</button><button type="button" data-theme-toggle>外观：跟随系统</button></section>{{end}}
+
 {{define "home"}}{{template "base-head" .}}
-<header class="site-header">
-  <div><p class="eyebrow">本地只读资料架</p><h1>{{.Title}}</h1></div>
-  <nav class="toolbar" aria-label="排序方式">
-    <a class="sort-link" href="/?sort=modified" aria-current="{{if not .SortByName}}true{{else}}false{{end}}">最近修改</a>
-    <a class="sort-link" href="/?sort=name" aria-current="{{if .SortByName}}true{{else}}false{{end}}">按名称</a>
-  </nav>
-</header>
-<section class="app-grid" aria-label="应用列表">{{range .Apps}}
-  <a class="card app-card" href="/a/{{pathEscape .Slug}}/">
-    <span class="card-top"><span class="app-name">{{.Name}}</span><span class="status {{if .Locked}}locked{{else if .Protected}}protected{{end}}">{{if .Locked}}⚠ 管理员配置待修复{{else if .Protected}}🔒 需要密码{{else}}公开{{end}}</span></span>
-    {{if .Description}}<p class="description">{{.Description}}</p>{{else}}<p class="description">暂无说明</p>{{end}}
-    <span class="app-footer"><span class="meta">目录</span><time class="meta" datetime="{{.ModTime.Format "2006-01-02T15:04:05Z07:00"}}">{{.ModTime.Format "2006-01-02 15:04"}}</time></span>
-  </a>{{else}}
-  <div class="card empty"><div class="empty-icon" aria-hidden="true">⌁</div><h2>尚无可用应用</h2><p class="empty-copy">在数据目录中新建一个普通目录后，它会显示在这里。</p></div>
-{{end}}</section>
-</main></body></html>{{end}}
+<header class="site-header"><div><p class="eyebrow">本地只读资料架</p><h1>{{.Title}}</h1><p class="description">浏览资料目录；需要密码的目录会在进入前进行验证。</p></div><div><nav class="toolbar" aria-label="排序方式"><a class="sort-link" href="/?sort=modified" aria-current="{{if not .SortByName}}true{{else}}false{{end}}">最近修改</a><a class="sort-link" href="/?sort=name" aria-current="{{if .SortByName}}true{{else}}false{{end}}">按名称</a></nav>{{template "appearance-controls" .}}</div></header>
+<section class="app-grid" aria-label="应用列表">{{range .Apps}}<a class="card app-card" href="{{.URL}}"><span class="card-top"><span class="app-name">{{.Name}}</span><span class="status {{if .Locked}}locked{{else if .Protected}}protected{{end}}">{{if .Locked}}⚠ 管理员配置待修复{{else if .Protected}}🔒 需要密码{{else}}● 公开{{end}}</span></span>{{if .Description}}<p class="description">{{.Description}}</p>{{else}}<p class="description">暂无说明</p>{{end}}<span class="app-footer"><span class="meta">目录</span><time class="meta" datetime="{{.ModTime.Format "2006-01-02T15:04:05Z07:00"}}">{{.ModTime.Format "2006-01-02 15:04"}}</time></span></a>{{else}}<div class="card empty"><div class="empty-icon" aria-hidden="true">⌁</div><h2>尚无可用应用</h2><p class="empty-copy">在数据目录中新建一个普通目录后，它会显示在这里。</p><div class="guide"><strong>首次管理员引导</strong><ol><li>确认 DataShelf 的数据根目录。</li><li>在其中创建一个资料目录，例如“设计资料”。</li><li>重新访问此页；需要保护时再在目录中放置私有配置。</li></ol></div></div>{{end}}</section>
+{{template "page-script" .}}</main></body></html>{{end}}
 
-{{define "login"}}{{template "base-head" .}}
-<section class="panel" aria-labelledby="login-title">
-  <p class="eyebrow">受保护的资料</p><h1 id="login-title">{{.Name}}</h1><p class="description">请输入密码以继续访问。验证成功后会返回你刚才请求的页面。</p>
-  {{if .Message}}<div class="notice" role="alert" aria-live="assertive"><span aria-hidden="true">!</span><span>{{.Message}}</span></div>{{end}}
-  {{if not .Locked}}<form method="post" action="/_auth/{{pathEscape .Slug}}"><input type="hidden" name="return" value="{{.Return}}"><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus aria-describedby="password-help"><p class="form-help" id="password-help">按 Enter 键即可提交。</p><button type="submit">进入资料</button></form>{{else}}<a class="back-link" href="/">返回资料架</a>{{end}}
-</section>
-<script>document.addEventListener("DOMContentLoaded",function(){var input=document.getElementById("password");if(input){input.focus();}});</script>
-</main></body></html>{{end}}
+{{define "login"}}{{template "base-head" .}}<section class="panel" aria-labelledby="login-title"><p class="eyebrow">受保护的资料</p><h1 id="login-title">{{.Name}}</h1><p class="description">请输入密码以继续访问。验证成功后会返回你刚才请求的页面。</p>{{if .Message}}<div class="notice" role="alert" aria-live="assertive"><span aria-hidden="true">!</span><span>{{.Message}}</span></div>{{end}}{{if not .Locked}}<form method="post" action="/_auth/{{pathEscape .Slug}}"><input type="hidden" name="return" value="{{.Return}}"><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus aria-describedby="password-help"><p class="form-help" id="password-help">按 Enter 键即可提交。</p><button type="submit">进入资料</button></form>{{end}}<a class="back-link" href="/">返回资料架</a></section>{{template "page-script" .}}</main></body></html>{{end}}
 
-{{define "directory"}}{{template "base-head" .}}
-<nav class="crumbs" aria-label="路径导航">{{range .Crumbs}}<a href="{{.URL}}">{{.Name}}</a><span class="crumb-separator" aria-hidden="true">/</span>{{end}}</nav>
-<header class="directory-heading"><div><p class="eyebrow">目录浏览</p><h1>{{.Name}}</h1></div><span class="status {{if .Locked}}locked{{else if .Protected}}protected{{end}}">{{if .Locked}}⚠ 已锁定{{else if .Protected}}🔒 已保护{{else}}公开{{end}}</span></header>
-<section class="directory-list" aria-label="目录内容"><ul>{{range .Items}}
-  <li class="entry"><a href="{{.URL}}"><span class="entry-name">{{.Name}}</span><span class="entry-type">{{.Kind}}</span><span class="entry-size">{{if .Size}}{{.Size}}{{else}}—{{end}}</span><time class="entry-modified">{{.Modified}}</time></a></li>
-{{else}}
-  <li class="empty"><div class="empty-icon" aria-hidden="true">⌁</div><h2>此目录为空</h2><p class="empty-copy">没有可显示的文件或子目录。</p></li>
-{{end}}</ul></section>
-</main></body></html>{{end}}
+{{define "directory"}}{{template "base-head" .}}<nav class="crumbs" aria-label="路径导航"><a class="back-link" href="/">资料架首页</a><span class="crumb-separator" aria-hidden="true">/</span>{{range .Crumbs}}<a href="{{.URL}}">{{.Name}}</a><span class="crumb-separator" aria-hidden="true">/</span>{{end}}<span aria-current="page">{{.Name}}</span></nav><header class="directory-heading"><div><p class="eyebrow">目录浏览</p><h1>{{.Name}}</h1></div><span class="status {{if .Locked}}locked{{else if .Protected}}protected{{end}}">{{if .Locked}}⚠ 已锁定{{else if .Protected}}🔒 已保护{{else}}● 公开{{end}}</span></header>
+<section class="directory-list" aria-label="目录内容"><ul>{{range .Items}}<li class="entry"><a class="entry-link" href="{{.URL}}"{{if eq .OpenMode "external"}} target="_blank" rel="noopener"{{else if eq .OpenMode "modal"}} data-preview-kind="{{.PreviewKind}}" data-preview-url="{{.PreviewURL}}" data-preview-name="{{.Name}}"{{end}}>{{.Name}}</a><span class="entry-type">{{.Kind}}</span><span class="entry-size">{{if .Size}}{{.Size}}{{else}}—{{end}}</span><time class="entry-modified">{{.Modified}}</time>{{if eq .OpenMode "modal"}}<button class="entry-action" type="button" data-preview-kind="{{.PreviewKind}}" data-preview-url="{{.PreviewURL}}" data-preview-name="{{.Name}}">预览</button>{{else if eq .OpenMode "external"}}<a class="entry-action" href="{{.URL}}" target="_blank" rel="noopener">新标签打开</a>{{end}}</li>{{else}}<li class="empty"><div class="empty-icon" aria-hidden="true">⌁</div><h2>此目录为空</h2><p class="empty-copy">没有可显示的文件或子目录。</p></li>{{end}}</ul></section>
+<p class="preview-help">不可预览文件将在新标签打开；当前目录会保持不变。</p>{{template "preview-dialog" .}}{{template "page-script" .}}</main></body></html>{{end}}
 
-{{define "error"}}{{template "base-head" .}}
-<section class="panel" aria-labelledby="error-title"><p class="eyebrow">资料访问</p><h1 id="error-title">{{.Heading}}</h1><p class="description">{{.Detail}}</p><a class="back-link" href="{{.BackURL}}">返回上一层</a></section>
-</main></body></html>{{end}}
+{{define "error"}}{{template "base-head" .}}<section class="panel" aria-labelledby="error-title"><p class="eyebrow">资料访问</p><h1 id="error-title">{{.Heading}}</h1><p class="description">{{.Detail}}</p><a class="back-link" href="{{.BackURL}}">返回上一层</a><a class="back-link" href="/">返回资料架</a></section>{{template "page-script" .}}</main></body></html>{{end}}
 
-{{/* Reserved integration state for a server-side preview handler. Unknown files
-     continue to use Content-Disposition: attachment as required by the MVP. */}}
-{{define "preview-unavailable"}}{{template "base-head" .}}<section class="panel" aria-labelledby="preview-title"><p class="eyebrow">文件预览</p><h1 id="preview-title">无法预览此文件</h1><p class="description">此格式不支持浏览器内预览。请下载后使用本地应用打开。</p><a class="back-link" href="{{.BackURL}}">返回目录</a></section></main></body></html>{{end}}
+{{define "preview-dialog"}}<dialog class="preview-dialog" id="preview-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-title"><section><header class="modal-head"><div><p class="eyebrow" id="preview-kind-label">文件预览</p><h2 id="preview-title" tabindex="-1"></h2></div><button class="modal-control modal-close" id="preview-close" type="button" aria-label="关闭预览">×</button></header><div class="preview-area" id="preview-content" aria-live="polite"></div><footer class="modal-foot"><span class="preview-help" id="preview-help">按 Esc 关闭预览</span><div class="preview-nav" id="preview-nav" hidden><button class="modal-control" id="preview-previous" type="button">上一张</button><button class="modal-control" id="preview-next" type="button">下一张</button></div></footer></section></dialog>{{end}}
+
+{{define "page-script"}}<script>(function(){
+  var root=document.documentElement,preferenceKey="datashelf-ui-preferences-v1",accents=["azure","forest","terracotta"],themes=["light","dark","system"];
+  function preferences(){try{return JSON.parse(localStorage.getItem(preferenceKey))||{}}catch(_){return {}}} function save(p){try{localStorage.setItem(preferenceKey,JSON.stringify(p))}catch(_){}}
+  function apply(p){var a=accents.indexOf(p.accent)>=0?p.accent:"azure",t=themes.indexOf(p.theme)>=0?p.theme:"system",labels={light:"浅色",dark:"深色",system:"跟随系统"};root.dataset.accent=a;if(t==="system"){delete root.dataset.theme}else{root.dataset.theme=t}document.querySelectorAll("[data-accent]").forEach(function(b){b.setAttribute("aria-pressed",String(b.dataset.accent===a))});var toggle=document.querySelector("[data-theme-toggle]");if(toggle){toggle.textContent="外观："+labels[t]}}
+  var currentPreferences=preferences();apply(currentPreferences);document.querySelectorAll("[data-accent]").forEach(function(button){button.addEventListener("click",function(){currentPreferences.accent=button.dataset.accent;save(currentPreferences);apply(currentPreferences)})});var themeToggle=document.querySelector("[data-theme-toggle]");if(themeToggle){themeToggle.addEventListener("click",function(){var current=themes.indexOf(currentPreferences.theme)>=0?currentPreferences.theme:"system";currentPreferences.theme=themes[(themes.indexOf(current)+1)%themes.length];save(currentPreferences);apply(currentPreferences)})}
+  var dialog=document.getElementById("preview-dialog");if(!dialog||!dialog.showModal){return}var content=document.getElementById("preview-content"),title=document.getElementById("preview-title"),kindLabel=document.getElementById("preview-kind-label"),help=document.getElementById("preview-help"),closeButton=document.getElementById("preview-close"),navigation=document.getElementById("preview-nav"),previous=document.getElementById("preview-previous"),next=document.getElementById("preview-next"),triggers=Array.prototype.slice.call(document.querySelectorAll("[data-preview-kind]")),images=Array.prototype.slice.call(document.querySelectorAll(".entry-link[data-preview-kind=\"image\"]")),activeTrigger,returnTrigger,abortController;
+  function imageIndex(){return images.indexOf(activeTrigger)} function clear(){if(abortController){abortController.abort();abortController=null}while(content.firstChild){content.removeChild(content.firstChild)}} function textNode(message,className){var node=document.createElement(className?"pre":"p");if(className){node.className=className}node.textContent=message;content.appendChild(node)}
+  function render(trigger){var kind=trigger.dataset.previewKind,url=trigger.dataset.previewUrl,name=trigger.dataset.previewName;if(kind==="image"){activeTrigger=images.filter(function(image){return image.dataset.previewUrl===url})[0]||trigger}else{activeTrigger=trigger}clear();title.textContent=name;navigation.hidden=kind!=="image";if(kind==="image"){kindLabel.textContent="图片预览";help.textContent="Esc 关闭；← / → 切换同目录图片";var image=document.createElement("img");image.className="preview-image";image.src=url;image.alt=name;image.addEventListener("error",function(){clear();textNode("图片无法加载。请关闭预览后在新标签中打开文件。")});content.appendChild(image);var index=imageIndex();previous.disabled=index<=0;next.disabled=index<0||index>=images.length-1;return}if(kind==="pdf"){kindLabel.textContent="PDF 预览";help.textContent="Esc 关闭；文档可在此区域滚动阅读";var frame=document.createElement("iframe");frame.className="preview-document";frame.src=url;frame.title=name;frame.setAttribute("sandbox","");content.appendChild(frame);return}kindLabel.textContent="文本预览";help.textContent="Esc 关闭；文本仅以纯文本形式显示";textNode("正在载入…","preview-text");abortController=new AbortController();fetch(url,{credentials:"same-origin",signal:abortController.signal}).then(function(response){if(!response.ok){throw new Error("HTTP "+response.status)}return response.text()}).then(function(value){clear();textNode(value,"preview-text")}).catch(function(error){if(error.name!=="AbortError"){clear();textNode("文本无法载入。请关闭预览后在新标签中打开文件。","preview-text")}})}
+  function open(trigger){returnTrigger=trigger;render(trigger);dialog.showModal();closeButton.focus()} function close(){if(!dialog.open){return}dialog.close();clear();if(returnTrigger&&document.contains(returnTrigger)){returnTrigger.focus()}}
+  triggers.forEach(function(trigger){trigger.addEventListener("click",function(event){event.preventDefault();open(trigger)})});closeButton.addEventListener("click",close);dialog.addEventListener("cancel",function(event){event.preventDefault();close()});dialog.addEventListener("click",function(event){if(event.target===dialog){close()}});previous.addEventListener("click",function(){var i=imageIndex();if(i>0){render(images[i-1]);previous.focus()}});next.addEventListener("click",function(){var i=imageIndex();if(i>=0&&i<images.length-1){render(images[i+1]);next.focus()}});
+  dialog.addEventListener("keydown",function(event){var focusable=Array.prototype.slice.call(dialog.querySelectorAll("button:not([disabled]),[href],iframe,[tabindex]:not([tabindex=\"-1\"])")).filter(function(el){return !el.hidden});if(event.key==="Escape"){event.preventDefault();close();return}if(event.key==="ArrowLeft"&&activeTrigger&&activeTrigger.dataset.previewKind==="image"&&document.activeElement.tagName!=="INPUT"){previous.click();return}if(event.key==="ArrowRight"&&activeTrigger&&activeTrigger.dataset.previewKind==="image"&&document.activeElement.tagName!=="INPUT"){next.click();return}if(event.key==="Tab"&&focusable.length){var first=focusable[0],last=focusable[focusable.length-1];if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus()}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}}});
+}());</script>{{end}}
