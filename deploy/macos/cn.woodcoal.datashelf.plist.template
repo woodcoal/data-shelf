@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>cn.woodcoal.datashelf</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__DATASHELF_HOME__/.local/bin/datashelf-darwin-arm64</string>
+        <string>-dir</string>
+        <string>__DATASHELF_HOME__/Documents/data</string>
+        <string>-host</string>
+        <string>127.0.0.1</string>
+        <string>-port</string>
+        <string>9090</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__DATASHELF_HOME__</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>__DATASHELF_HOME__/Library/Logs/DataShelf/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__DATASHELF_HOME__/Library/Logs/DataShelf/stderr.log</string>
+</dict>
+</plist>

@@ -1,0 +1,24 @@
+[Unit]
+Description=DataShelf local read-only data shelf
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/datashelf-linux-amd64 -dir %h/Documents/data -host 127.0.0.1 -port 9090
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+RestrictSUIDSGID=true
+LockPersonality=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
