@@ -39,3 +39,8 @@ CGO_ENABLED=0 go build -trimpath -o datashelf .
 ```
 
 如需局域网访问，请显式设置 `-host 0.0.0.0`，并在生产环境前置 HTTPS 反向代理。
+
+跨平台构建、校验、systemd/launchd/Windows 常驻运行和卸载说明见
+[`docs/RELEASE.md`](docs/RELEASE.md)。运行 `./scripts/build-release.sh` 会在
+`dist/` 生成 Linux amd64、macOS amd64、macOS arm64 和 Windows amd64 四个
+`datashelf-*` 产物及 `SHA256SUMS`。
