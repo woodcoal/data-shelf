@@ -67,3 +67,51 @@ func TestMissingEnvIsPublic(t *testing.T) {
 		t.Fatalf("unexpected public config: %+v err=%v", cfg, err)
 	}
 }
+
+func TestGlobalConfigLoadsRelativeDataDirAndMigratesPassword(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "datashelf.env")
+	original := "DATA_DIR='data'\nSITE_TITLE='团队资料架'\nGLOBAL_PASSWORD='plain:全局密码六位'\n"
+	if err := os.WriteFile(configPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadGlobalConfig(configPath, "fallback-data", "fallback-title", true)
+	if err != nil {
+		t.Fatalf("loadGlobalConfig: %v", err)
+	}
+	if cfg.DataDir != filepath.Join(dir, "data") || cfg.SiteTitle != "团队资料架" || !verifyPassword(cfg.Password, "全局密码六位") {
+		t.Fatalf("unexpected global config: %+v", cfg)
+	}
+	updated, err := os.ReadFile(configPath)
+	if err != nil || strings.Contains(string(updated), "plain:") || !strings.Contains(string(updated), "hash:v1:argon2id:") {
+		t.Fatalf("global password was not migrated: %q err=%v", updated, err)
+	}
+}
+
+func TestGlobalConfigFailureModesAndMissingDefault(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "datashelf.env")
+	cfg, err := loadGlobalConfig(missing, "default-data", "default-title", false)
+	if err != nil || cfg.DataDir != "default-data" || cfg.SiteTitle != "default-title" || cfg.Password != "" {
+		t.Fatalf("unexpected missing default config: %+v err=%v", cfg, err)
+	}
+	if _, err := loadGlobalConfig(missing, "", "", true); err == nil {
+		t.Fatal("explicit missing config was accepted")
+	}
+	for _, content := range []string{
+		"GLOBAL_PASSWORD=''\n",
+		"GLOBAL_PASSWORD='plain:123456'\nGLOBAL_PASSWORD='plain:654321'\n",
+		"GLOBAL_PASSWORD='mystery:value'\n",
+		"UNSAFE_OPTION='x'\n",
+		"DATA_DIR=''\n",
+	} {
+		t.Run(strings.ReplaceAll(content, "\n", "_"), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "datashelf.env")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loadGlobalConfig(path, "default-data", "default-title", true); err == nil {
+				t.Fatalf("invalid global configuration was accepted: %q", content)
+			}
+		})
+	}
+}

@@ -89,17 +89,17 @@ func requestIsHTTPS(r *http.Request) bool {
 
 func safeReturnTarget(target, app string) string {
 	if target == "" {
-		return "/a/" + url.PathEscape(app) + "/"
+		return appURL(app, nil, true)
 	}
 	u, err := url.Parse(target)
 	if err != nil || u.IsAbs() || u.Host != "" || u.RawQuery != "" || u.Fragment != "" || !strings.HasPrefix(u.Path, "/") {
-		return "/a/" + url.PathEscape(app) + "/"
+		return appURL(app, nil, true)
 	}
 	segments, err := decodePathSegments(u.EscapedPath())
-	if err != nil || len(segments) < 2 || segments[0] != "a" || segments[1] != app {
-		return "/a/" + url.PathEscape(app) + "/"
+	if err != nil || len(segments) < 1 || segments[0] != app {
+		return appURL(app, nil, true)
 	}
-	return u.EscapedPath()
+	return appURL(app, trimTrailingEmpty(segments[1:]), strings.HasSuffix(u.EscapedPath(), "/"))
 }
 
 func decodePathSegments(escapedPath string) ([]string, error) {

@@ -67,8 +67,12 @@ func request(t *testing.T, s http.Handler, method, target string, headers map[st
 }
 
 func login(t *testing.T, s *server, slug string) *http.Cookie {
+	return loginWithPassword(t, s, slug, "测试密码123")
+}
+
+func loginWithPassword(t *testing.T, s *server, slug, password string) *http.Cookie {
 	t.Helper()
-	form := url.Values{"password": {"测试密码123"}, "return": {appURL(slug, []string{"secret.txt"}, false)}}
+	form := url.Values{"password": {password}, "return": {appURL(slug, []string{"secret.txt"}, false)}}
 	r := httptest.NewRequest(http.MethodPost, "/_auth/"+url.PathEscape(slug), strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.RemoteAddr = "127.0.0.1:43210"
@@ -82,6 +86,153 @@ func login(t *testing.T, s *server, slug string) *http.Cookie {
 		t.Fatalf("expected session cookie, got %d", len(result))
 	}
 	return result[0]
+}
+
+func TestCanonicalRoutesLegacyRedirectAndReturnTargets(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	canonicalRoot := appURL(slug, nil, true)
+	w := request(t, s, http.MethodGet, strings.TrimSuffix(canonicalRoot, "/"), nil)
+	if w.Code != http.StatusPermanentRedirect || w.Header().Get("Location") != canonicalRoot {
+		t.Fatalf("canonical root redirect status=%d location=%q", w.Code, w.Header().Get("Location"))
+	}
+	w = request(t, s, http.MethodGet, "/a/"+url.PathEscape(slug)+"/secret.txt", nil)
+	if w.Code != http.StatusPermanentRedirect || w.Header().Get("Location") != appURL(slug, []string{"secret.txt"}, false) {
+		t.Fatalf("legacy redirect status=%d location=%q", w.Code, w.Header().Get("Location"))
+	}
+	w = request(t, s, http.MethodPost, "/a/"+url.PathEscape(slug)+"/secret.txt", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("legacy POST status=%d", w.Code)
+	}
+	w = request(t, s, http.MethodGet, appURL(slug, []string{"secret.txt"}, false), nil)
+	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Location"), "return="+url.QueryEscape(appURL(slug, []string{"secret.txt"}, false))) {
+		t.Fatalf("deep-link login redirect status=%d location=%q", w.Code, w.Header().Get("Location"))
+	}
+	cookie := login(t, s, slug)
+	if cookie.Path != canonicalRoot {
+		t.Fatalf("cookie path=%q want=%q", cookie.Path, canonicalRoot)
+	}
+	for _, target := range []string{"https://example.invalid/", "/other/secret.txt", "/a/" + url.PathEscape(slug) + "/secret.txt", "/" + url.PathEscape(slug) + "/%252e%252e/secret.txt"} {
+		if got := safeReturnTarget(target, slug); got != canonicalRoot {
+			t.Errorf("unsafe return %q accepted as %q", target, got)
+		}
+	}
+}
+
+func TestReservedApplicationNamesAreNotPublished(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a", "_preview", "正常应用"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := newServer(root, "Test Shelf", log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := s.apps["a"]; exists {
+		t.Fatal("reserved a directory was published")
+	}
+	if _, exists := s.apps["_preview"]; exists {
+		t.Fatal("reserved internal directory was published")
+	}
+	if _, exists := s.apps["正常应用"]; !exists {
+		t.Fatal("normal application was not published")
+	}
+}
+
+func TestGlobalPasswordOnlyProtectsPublicApps(t *testing.T) {
+	s, slug := makeTestServer(t, false)
+	s.global = globalConfig{Password: protectedHash(t)}
+	s.global.Version[0] = 1
+	target := appURL(slug, []string{"secret.txt"}, false)
+	w := request(t, s, http.MethodGet, target, nil)
+	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("global-protected public app status=%d cache=%q", w.Code, w.Header().Get("Cache-Control"))
+	}
+	globalCookie := login(t, s, slug)
+	w = request(t, s, http.MethodGet, target, nil, globalCookie)
+	if w.Code != http.StatusOK {
+		t.Fatalf("global password did not authorize public app: %d", w.Code)
+	}
+
+	privateSlug := "私有应用"
+	privateDir := filepath.Join(s.root, privateSlug)
+	if err := os.Mkdir(privateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(privateDir, "secret.txt"), []byte("private"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	privateHash, err := hashPassword("私有密码六位")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(privateDir, ".env"), []byte("PASSWORD='"+privateHash+"'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(privateDir)
+	s.apps[privateSlug] = &application{Slug: privateSlug, Dir: privateDir, ModTime: info.ModTime()}
+	w = request(t, s, http.MethodGet, appURL(privateSlug, []string{"secret.txt"}, false), nil, globalCookie)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("global cookie crossed into private application: %d", w.Code)
+	}
+	form := url.Values{"password": {"测试密码123"}, "return": {appURL(privateSlug, nil, true)}}
+	r := httptest.NewRequest(http.MethodPost, "/_auth/"+url.PathEscape(privateSlug), strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.RemoteAddr = "127.0.0.1:43210"
+	w = httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("global password unlocked private app: %d", w.Code)
+	}
+	privateCookie := loginWithPassword(t, s, privateSlug, "私有密码六位")
+	w = request(t, s, http.MethodGet, appURL(privateSlug, []string{"secret.txt"}, false), nil, privateCookie)
+	if w.Code != http.StatusOK {
+		t.Fatalf("private password did not authorize private app: %d", w.Code)
+	}
+}
+
+func TestInvalidPrivateConfigCannotFallBackToGlobalPassword(t *testing.T) {
+	s, slug := makeTestServer(t, false)
+	s.global = globalConfig{Password: protectedHash(t)}
+	if err := os.WriteFile(filepath.Join(s.apps[slug].Dir, ".env"), []byte("PASSWORD='invalid'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := request(t, s, http.MethodGet, appURL(slug, []string{"secret.txt"}, false), nil)
+	if w.Code != http.StatusLocked || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("invalid private config fell back to global password: status=%d cache=%q", w.Code, w.Header().Get("Cache-Control"))
+	}
+}
+
+func TestPreviewEndpointRemainsClassifiedAndAuthorized(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	appDir := s.apps[slug].Dir
+	if err := os.WriteFile(filepath.Join(appDir, "note.txt"), []byte("previewable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noteInfo, err := os.Stat(filepath.Join(appDir, "note.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind, mode := previewFor("note.txt", noteInfo); kind != "text" || mode != "modal" {
+		t.Fatalf("text classification=%s/%s", kind, mode)
+	}
+	w := request(t, s, http.MethodGet, previewURL(slug, []string{"note.txt"}), nil)
+	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("unauthenticated preview status=%d cache=%q", w.Code, w.Header().Get("Cache-Control"))
+	}
+	cookie := login(t, s, slug)
+	w = request(t, s, http.MethodGet, previewURL(slug, []string{"note.txt"}), nil, cookie)
+	if w.Code != http.StatusOK || w.Body.String() != "previewable" || !strings.Contains(w.Header().Get("Content-Security-Policy"), "sandbox") {
+		t.Fatalf("preview response status=%d body=%q csp=%q", w.Code, w.Body.String(), w.Header().Get("Content-Security-Policy"))
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "unsafe.svg"), []byte("<svg/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w = request(t, s, http.MethodGet, previewURL(slug, []string{"unsafe.svg"}), nil, cookie)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unsafe preview status=%d", w.Code)
+	}
 }
 
 func TestProtectedRequestsRevealNoFileMetadataBeforeAuth(t *testing.T) {
