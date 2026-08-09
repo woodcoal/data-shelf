@@ -432,6 +432,25 @@ func TestDirectoryTemplateUsesServerPreviewContract(t *testing.T) {
 	}
 }
 
+func TestDirectoryTemplateHonorsServerDownloadOpenMode(t *testing.T) {
+	s, _ := makeTestServer(t, false)
+	type item struct {
+		Name, URL, PreviewURL, PreviewKind, OpenMode, Kind, Size, Modified string
+	}
+	var body strings.Builder
+	err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{
+		"Items": []item{{Name: "archive.zip", URL: "/archive.zip", OpenMode: "download", Kind: "文件"}},
+	})
+	if err != nil {
+		t.Fatalf("render download entry: %v", err)
+	}
+	for _, want := range []string{`href="/archive.zip" download`, `download>下载</a>`} {
+		if !strings.Contains(body.String(), want) {
+			t.Errorf("download entry missing %q", want)
+		}
+	}
+}
+
 func TestPreviewKindForUsesNarrowAllowList(t *testing.T) {
 	cases := map[string]string{
 		"photo.AVIF":   "image",
