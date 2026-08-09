@@ -243,6 +243,99 @@ func TestEmbeddedDirectoryTemplateEscapesNamesAndShowsMetadata(t *testing.T) {
 	}
 }
 
+func TestDirectoryTemplateUsesServerPreviewContract(t *testing.T) {
+	s, slug := makeTestServer(t, false)
+	for name := range map[string]string{
+		"cover.png":     "image",
+		"guide.pdf":     "pdf",
+		"readme.html":   "text",
+		"archive.zip":   "",
+		"untrusted.svg": "",
+	} {
+		if err := os.WriteFile(filepath.Join(s.apps[slug].Dir, name), []byte("content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := request(t, s, http.MethodGet, appURL(slug, nil, true), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("directory status=%d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`data-preview-kind="image"`,
+		`data-preview-kind="pdf"`,
+		`data-preview-kind="text"`,
+		`data-preview-url=`,
+		`target="_blank"`,
+		`rel="noopener"`,
+		`资料架首页`,
+		`aria-modal="true"`,
+		`datashelf-ui-preferences-v1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("directory page missing %q", want)
+		}
+	}
+	if strings.Contains(body, `data-preview-kind="svg"`) || strings.Contains(body, `data-preview-kind="zip"`) {
+		t.Error("unsafe file type was made previewable")
+	}
+}
+
+func TestPreviewKindForUsesNarrowAllowList(t *testing.T) {
+	cases := map[string]string{
+		"photo.AVIF":   "image",
+		"report.PDF":   "pdf",
+		"payload.html": "text",
+		"vector.svg":   "",
+		"script.wasm":  "",
+		"office.docx":  "",
+	}
+	for name, want := range cases {
+		if got := previewKindFor(name); got != want {
+			t.Errorf("previewKindFor(%q)=%q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestDeepDirectoryShowsCurrentNameAndClickableAncestors(t *testing.T) {
+	s, slug := makeTestServer(t, false)
+	if err := os.MkdirAll(filepath.Join(s.apps[slug].Dir, "2026", "交付"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := request(t, s, http.MethodGet, appURL(slug, []string{"2026", "交付"}, true), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("directory status=%d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{`>资料架首页<`, `>资料 应用<`, `>2026<`, `aria-current="page">交付<`, `<h1>交付</h1>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("deep directory page missing %q", want)
+		}
+	}
+}
+
+func TestHomeUsesServerGeneratedApplicationURL(t *testing.T) {
+	s, slug := makeTestServer(t, false)
+	w := request(t, s, http.MethodGet, "/", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("home status=%d", w.Code)
+	}
+	if want := `href="` + appURL(slug, nil, true) + `"`; !strings.Contains(w.Body.String(), want) {
+		t.Errorf("home page missing application URL %q", want)
+	}
+}
+
+func TestSVGIsDeliveredAsAttachment(t *testing.T) {
+	s, slug := makeTestServer(t, false)
+	if err := os.WriteFile(filepath.Join(s.apps[slug].Dir, "untrusted.svg"), []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := request(t, s, http.MethodGet, appURL(slug, []string{"untrusted.svg"}, false), nil)
+	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Disposition"), "attachment;") {
+		t.Fatalf("svg response status=%d disposition=%q", w.Code, w.Header().Get("Content-Disposition"))
+	}
+}
+
 func TestEmbeddedLoginTemplateProvidesAccessibleErrorAndKeyboardForm(t *testing.T) {
 	s, slug := makeTestServer(t, true)
 	form := url.Values{"password": {"错误密码"}, "return": {appURL(slug, nil, true)}}

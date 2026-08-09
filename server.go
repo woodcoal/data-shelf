@@ -128,14 +128,14 @@ func (s *server) home(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type card struct {
-		Slug, Name, Description string
-		Protected, Locked       bool
-		ModTime                 time.Time
+		Slug, Name, Description, URL string
+		Protected, Locked            bool
+		ModTime                      time.Time
 	}
 	cards := make([]card, 0, len(s.apps))
 	for _, app := range s.apps {
 		cfg := s.refreshConfig(app)
-		cards = append(cards, card{app.Slug, cfg.Name, cfg.Description, cfg.Protected, cfg.Locked, app.ModTime})
+		cards = append(cards, card{app.Slug, cfg.Name, cfg.Description, appURL(app.Slug, nil, true), cfg.Protected, cfg.Locked, app.ModTime})
 	}
 	if r.URL.Query().Get("sort") == "name" {
 		sort.Slice(cards, func(i, j int) bool { return strings.ToLower(cards[i].Name) < strings.ToLower(cards[j].Name) })
@@ -326,7 +326,8 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		return
 	}
 	type item struct {
-		Name, URL, Kind, Size, Modified string
+		Name, URL, Kind, Size, Modified   string
+		PreviewKind, OpenMode, PreviewURL string
 	}
 	items := make([]item, 0, len(entries))
 	for _, entry := range entries {
@@ -340,12 +341,16 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		childSegments := append(append([]string{}, segments...), entry.Name())
 		itemURL := appURL(app.Slug, childSegments, info.IsDir())
 		kind, size := "文件", humanSize(info.Size())
+		previewKind, openMode, previewURL := "", "external", ""
 		if info.IsDir() {
-			kind, size = "目录", ""
+			kind, size, openMode = "目录", "", "navigate"
+		} else if previewKind = previewKindFor(entry.Name()); previewKind != "" {
+			openMode, previewURL = "modal", itemURL
 		}
 		items = append(items, item{
 			Name: entry.Name(), URL: itemURL, Kind: kind, Size: size,
-			Modified: info.ModTime().Format("2006-01-02 15:04"),
+			Modified:    info.ModTime().Format("2006-01-02 15:04"),
+			PreviewKind: previewKind, OpenMode: openMode, PreviewURL: previewURL,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -357,7 +362,14 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 	type crumb struct{ Name, URL string }
 	crumbs := []crumb{{cfg.Name, appURL(app.Slug, nil, true)}}
 	for i, segment := range segments {
+		if i == len(segments)-1 {
+			break
+		}
 		crumbs = append(crumbs, crumb{segment, appURL(app.Slug, segments[:i+1], true)})
+	}
+	displayName := cfg.Name
+	if len(segments) > 0 {
+		displayName = segments[len(segments)-1]
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.Method == http.MethodHead {
@@ -365,13 +377,29 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 	}
 	if err := s.pages.ExecuteTemplate(w, "directory", map[string]any{
 		"PageTitle": cfg.Name,
-		"Name":      cfg.Name,
+		"Name":      displayName,
 		"Items":     items,
 		"Crumbs":    crumbs,
 		"Protected": cfg.Protected,
 		"Locked":    cfg.Locked,
 	}); err != nil {
 		s.logger.Printf("render directory: %v", err)
+	}
+}
+
+// previewKindFor is the sole format allow-list used by the embedded UI. The
+// template only receives this classification and a server-generated URL; it
+// never promotes a file to previewable status based on its own extension check.
+func previewKindFor(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".ico":
+		return "image"
+	case ".pdf":
+		return "pdf"
+	case ".txt", ".md", ".markdown", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".html", ".htm", ".js", ".mjs", ".css", ".go", ".c", ".h", ".cs", ".ts", ".tsx", ".jsx", ".py", ".sh", ".sql":
+		return "text"
+	default:
+		return ""
 	}
 }
 
@@ -426,7 +454,7 @@ func contentDisposition(path string, rootIndex bool) (string, bool) {
 	case ".css":
 		return "text/css; charset=utf-8", false
 	case ".svg":
-		return "image/svg+xml", false
+		return "application/octet-stream", true
 	case ".pdf":
 		return "application/pdf", false
 	}
