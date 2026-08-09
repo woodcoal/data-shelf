@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"errors"
 	"fmt"
 	"html/template"
@@ -146,7 +147,12 @@ func (s *server) home(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {
 		return
 	}
-	if err := s.pages.ExecuteTemplate(w, "home", map[string]any{"PageTitle": s.title, "Title": s.title, "Apps": cards}); err != nil {
+	if err := s.pages.ExecuteTemplate(w, "home", map[string]any{
+		"PageTitle":  s.title,
+		"Title":      s.title,
+		"Apps":       cards,
+		"SortByName": r.URL.Query().Get("sort") == "name",
+	}); err != nil {
 		s.logger.Printf("render home: %v", err)
 	}
 }
@@ -316,11 +322,11 @@ func resolveSafePath(root string, segments []string) (string, fs.FileInfo, error
 func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *application, cfg appConfig, dir string, segments []string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		http.Error(w, "无法读取目录", http.StatusForbidden)
+		s.renderErrorPage(w, r, http.StatusForbidden, "无法访问此目录", "当前资料无法读取。请联系资料管理员确认目录权限。", appURL(app.Slug, trimTrailingEmpty(segments), true))
 		return
 	}
 	type item struct {
-		Name, URL, Kind, Size string
+		Name, URL, Kind, Size, Modified string
 	}
 	items := make([]item, 0, len(entries))
 	for _, entry := range entries {
@@ -337,7 +343,10 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		if info.IsDir() {
 			kind, size = "目录", ""
 		}
-		items = append(items, item{entry.Name(), itemURL, kind, size})
+		items = append(items, item{
+			Name: entry.Name(), URL: itemURL, Kind: kind, Size: size,
+			Modified: info.ModTime().Format("2006-01-02 15:04"),
+		})
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Kind != items[j].Kind {
@@ -354,7 +363,14 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 	if r.Method == http.MethodHead {
 		return
 	}
-	if err := s.pages.ExecuteTemplate(w, "directory", map[string]any{"PageTitle": cfg.Name, "Name": cfg.Name, "Items": items, "Crumbs": crumbs}); err != nil {
+	if err := s.pages.ExecuteTemplate(w, "directory", map[string]any{
+		"PageTitle": cfg.Name,
+		"Name":      cfg.Name,
+		"Items":     items,
+		"Crumbs":    crumbs,
+		"Protected": cfg.Protected,
+		"Locked":    cfg.Locked,
+	}); err != nil {
 		s.logger.Printf("render directory: %v", err)
 	}
 }
@@ -362,7 +378,7 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 func (s *server) serveFile(w http.ResponseWriter, r *http.Request, path string, info fs.FileInfo, rootIndex bool) {
 	file, err := os.Open(path)
 	if err != nil {
-		http.Error(w, "无法读取文件", http.StatusForbidden)
+		s.renderErrorPage(w, r, http.StatusForbidden, "无法访问此文件", "当前资料无法读取。请联系资料管理员确认文件权限。", "./")
 		return
 	}
 	defer file.Close()
@@ -377,6 +393,24 @@ func (s *server) serveFile(w http.ResponseWriter, r *http.Request, path string, 
 		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": info.Name()}))
 	}
 	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
+}
+
+// renderErrorPage keeps user-visible file access failures inside the same
+// embedded UI. Callers reach it only after authorization has completed.
+func (s *server) renderErrorPage(w http.ResponseWriter, r *http.Request, status int, heading, detail, backURL string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if err := s.pages.ExecuteTemplate(w, "error", map[string]string{
+		"PageTitle": heading + " - " + s.title,
+		"Heading":   heading,
+		"Detail":    detail,
+		"BackURL":   backURL,
+	}); err != nil {
+		s.logger.Printf("render error page: %v", err)
+	}
 }
 
 func contentDisposition(path string, rootIndex bool) (string, bool) {
@@ -431,9 +465,8 @@ func humanSize(size int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(size)/float64(div), "KMGTPE"[exp])
 }
 
-const pageTemplates = `{{define "base-head"}}<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
-body{margin:0;background:#f5f7fa;color:#182230;font:16px/1.5 system-ui,sans-serif}main{max-width:960px;margin:auto;padding:32px 20px}h1{margin:.2em 0}.toolbar,.crumbs{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}.card,.panel{display:block;background:white;border:1px solid #dfe4ea;border-radius:12px;padding:18px;color:inherit;text-decoration:none}.muted{color:#65758b}.lock{font-size:.85rem}.error{color:#a12622}.items{list-style:none;padding:0}.items li{background:white;border-bottom:1px solid #e5e9ef}.items a{display:flex;justify-content:space-between;gap:12px;padding:13px;color:inherit;text-decoration:none}input,button{box-sizing:border-box;width:100%;padding:11px;margin-top:8px;font:inherit}button{cursor:pointer;background:#1769e0;color:white;border:0;border-radius:7px}@media(max-width:560px){main{padding:20px 14px}.grid{grid-template-columns:1fr}}
-</style><title>{{.PageTitle}}</title></head><body><main>{{end}}
-{{define "home"}}{{template "base-head" .}}<h1>{{.Title}}</h1><div class="toolbar"><a href="/?sort=modified">最近修改</a><a href="/?sort=name">按名称</a></div><div class="grid">{{range .Apps}}<a class="card" href="/a/{{pathEscape .Slug}}/"><strong>{{.Name}}</strong> <span class="lock">{{if .Locked}}⚠ 已锁定{{else if .Protected}}🔒{{else}}公开{{end}}</span><p>{{.Description}}</p><small class="muted">{{.ModTime.Format "2006-01-02 15:04"}}</small></a>{{else}}<p class="muted">尚无可用应用。</p>{{end}}</div></main></body></html>{{end}}
-{{define "login"}}{{template "base-head" .}}<div class="panel"><h1>{{.Name}}</h1><p>请输入密码继续访问。</p>{{if .Message}}<p class="error" role="alert">{{.Message}}</p>{{end}}{{if not .Locked}}<form method="post" action="/_auth/{{pathEscape .Slug}}"><input type="hidden" name="return" value="{{.Return}}"><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus><button type="submit">进入</button></form>{{end}}</div></main></body></html>{{end}}
-{{define "directory"}}{{template "base-head" .}}<nav class="crumbs" aria-label="路径">{{range .Crumbs}}<a href="{{.URL}}">{{.Name}}</a><span>/</span>{{end}}</nav><ul class="items">{{range .Items}}<li><a href="{{.URL}}"><span>{{.Name}}</span><span class="muted">{{.Kind}} {{.Size}}</span></a></li>{{else}}<li class="card muted">此目录为空。</li>{{end}}</ul></main></body></html>{{end}}`
+// pageTemplates is bundled into the executable, so DataShelf has no runtime
+// dependency on a template or static-assets directory.
+//
+//go:embed web/pages.tmpl
+var pageTemplates string

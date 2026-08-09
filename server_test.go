@@ -221,3 +221,53 @@ func TestUnicodeSpaceHashAndPercentNamesRoundTrip(t *testing.T) {
 		t.Fatalf("round trip status=%d body=%q", w.Code, w.Body.String())
 	}
 }
+
+func TestEmbeddedDirectoryTemplateEscapesNamesAndShowsMetadata(t *testing.T) {
+	s, slug := makeTestServer(t, false)
+	name := "<资料> #%.txt"
+	if err := os.WriteFile(filepath.Join(s.apps[slug].Dir, name), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := request(t, s, http.MethodGet, appURL(slug, nil, true), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("directory status=%d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"目录浏览", "文件", " B", "&lt;资料&gt; #%.txt"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("directory page missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "<资料> #%.txt") {
+		t.Error("directory name was rendered without HTML escaping")
+	}
+}
+
+func TestEmbeddedLoginTemplateProvidesAccessibleErrorAndKeyboardForm(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	form := url.Values{"password": {"错误密码"}, "return": {appURL(slug, nil, true)}}
+	r := httptest.NewRequest(http.MethodPost, "/_auth/"+url.PathEscape(slug), strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.RemoteAddr = "127.0.0.1:43210"
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("login status=%d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"role=\"alert\"", "autofocus", "autocomplete=\"current-password\"", "按 Enter 键即可提交"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("login page missing %q", want)
+		}
+	}
+}
+
+func TestEmbeddedAccessErrorTemplate(t *testing.T) {
+	s, _ := makeTestServer(t, false)
+	r := httptest.NewRequest(http.MethodGet, "/a/missing/file.txt", nil)
+	w := httptest.NewRecorder()
+	s.renderErrorPage(w, r, http.StatusForbidden, "无法访问此文件", "当前资料无法读取。", "./")
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "返回上一层") {
+		t.Fatalf("error page status=%d body=%s", w.Code, w.Body.String())
+	}
+}
