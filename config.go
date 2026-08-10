@@ -202,7 +202,11 @@ func loadRootConfig(root, defaultTitle string) (globalConfig, error) {
 	if err != nil {
 		return globalConfig{}, fmt.Errorf("hash global password: %w", err)
 	}
-	updated, err := replaceDocumentPassword(doc, "PASSWORD", hash)
+	passwordKey := "PASSWORD"
+	if doc.keyCount["password"] == 1 {
+		passwordKey = "password"
+	}
+	updated, err := replaceDocumentPassword(doc, passwordKey, hash)
 	if err != nil {
 		return globalConfig{}, err
 	}
@@ -225,20 +229,29 @@ func loadRootConfig(root, defaultTitle string) (globalConfig, error) {
 }
 
 func rootConfigFromDocument(doc envDocument, defaultTitle string) (globalConfig, error) {
-	for _, key := range []string{"NAME", "DESCRIPTION", "PASSWORD"} {
+	for _, key := range []string{"NAME", "DESCRIPTION", "PASSWORD", "title", "description", "password"} {
 		if doc.keyCount[key] > 1 {
 			return globalConfig{}, fmt.Errorf("%s must appear at most once", key)
 		}
 	}
+	usesOld := doc.keyCount["NAME"]+doc.keyCount["DESCRIPTION"]+doc.keyCount["PASSWORD"] > 0
+	usesNew := doc.keyCount["title"]+doc.keyCount["description"]+doc.keyCount["password"] > 0
+	if usesOld && usesNew {
+		return globalConfig{}, errors.New("legacy and lower-case root configuration cannot be mixed")
+	}
+	titleKey, descriptionKey, passwordKey := "NAME", "DESCRIPTION", "PASSWORD"
+	if usesNew {
+		titleKey, descriptionKey, passwordKey = "title", "description", "password"
+	}
 	cfg := globalConfig{SiteTitle: defaultTitle}
-	if doc.keyCount["NAME"] == 1 && doc.values["NAME"] != "" {
-		cfg.SiteTitle = doc.values["NAME"]
+	if doc.keyCount[titleKey] == 1 && doc.values[titleKey] != "" {
+		cfg.SiteTitle = doc.values[titleKey]
 	}
-	if doc.keyCount["DESCRIPTION"] == 1 {
-		cfg.Description = doc.values["DESCRIPTION"]
+	if doc.keyCount[descriptionKey] == 1 {
+		cfg.Description = doc.values[descriptionKey]
 	}
-	if doc.keyCount["PASSWORD"] == 1 {
-		cfg.Password = doc.values["PASSWORD"]
+	if doc.keyCount[passwordKey] == 1 {
+		cfg.Password = doc.values[passwordKey]
 		if cfg.Password == "" {
 			return globalConfig{}, errors.New("PASSWORD is empty")
 		}
@@ -292,7 +305,9 @@ func parseEnv(raw []byte) (envDocument, error) {
 }
 
 func isSupportedEnvKey(key string) bool {
-	return key == "NAME" || key == "DESCRIPTION" || key == "PASSWORD" || key == "SHARE_ENABLED" || parseShareKey(key) != (shareKey{})
+	return key == "NAME" || key == "DESCRIPTION" || key == "PASSWORD" ||
+		key == "title" || key == "description" || key == "password" ||
+		key == "SHARE_ENABLED" || parseShareKey(key) != (shareKey{})
 }
 
 type shareKey struct {

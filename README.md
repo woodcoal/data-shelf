@@ -19,29 +19,29 @@ go run . -dir /path/to/data
 - `-dir`：数据根目录。未给出时使用启动目录；相对路径相对启动目录解析。
 - `-host`：监听地址；默认 `127.0.0.1`。非 loopback 地址会输出无 TLS 风险警告。
 - `-port`：监听端口；默认 `9090`。
-- `-title`：首页标题，优先于根 `.env` 的 `NAME`。
+- `-title`：首页标题，优先于根 `.env` 的 `title`。
 
-根配置固定为 `<数据根>/.env`，仅在启动时读取一次。它与子应用 `.env` 使用同一语法：UTF-8、最大 64 KiB、允许空行/注释，且只允许以下字段：
+数据根及任意真实子目录均可放置 `.env`。配置按请求即时校验：UTF-8、最大 64 KiB、允许空行/注释，规范字段严格为小写：
 
 ```dotenv
-NAME='团队资料架'
-DESCRIPTION='团队共享的只读资料'
-PASSWORD='plain:首次设置的全局密码'
+title='团队资料架'
+description='团队共享的只读资料'
+password='plain:首次设置的全局密码'
 ```
 
-数据根优先级为显式 `-dir` > 启动目录；标题优先级为 `-title` > 根 `.env` 的 `NAME` > `DataShelf`。密码没有命令行参数，避免出现在 shell 历史或进程列表。根 `PASSWORD` 缺失时全局密码关闭；设置后，仅原本公开的应用需要使用根密码。带私有 `.env` 密码的应用仍只认自己的密码，损坏的私有配置也始终锁定，不能被根密码绕过。
+数据根优先级为显式 `-dir` > 启动目录；标题优先级为 `-title` > 根 `.env` 的 `title` > `DataShelf`。标题与说明只作用于其所在目录；密码按最近有效祖先继承，子目录有效密码创建新的授权边界。空密码、重复/未知字段、大小写近似、链接、超限或读取错误都会锁定对应子树，绝不回退为公开。根与应用根仍提供一次 `NAME`/`DESCRIPTION`/`PASSWORD` 的迁移兼容；嵌套目录只接受小写字段。
 
-旧版 `datashelf.env`（包含 `DATA_DIR`、`SITE_TITLE`、`GLOBAL_PASSWORD`）不再加载。为避免旧密码被静默忽略，启动目录或可执行文件目录发现该文件时服务会拒绝启动；请将 `SITE_TITLE` 迁移为根 `.env` 的 `NAME`，将 `GLOBAL_PASSWORD` 迁移为 `PASSWORD`，可增加 `DESCRIPTION`，并移除旧文件。数据根不再从配置文件设置。
+旧版 `datashelf.env`（包含 `DATA_DIR`、`SITE_TITLE`、`GLOBAL_PASSWORD`）不再加载。为避免旧密码被静默忽略，启动目录或可执行文件目录发现该文件时服务会拒绝启动；请将 `SITE_TITLE` 迁移为根 `.env` 的 `title`，将 `GLOBAL_PASSWORD` 迁移为 `password`，可增加 `description`，并移除旧文件。数据根不再从配置文件设置。
 
 受保护应用的 `.env` 示例：
 
 ```dotenv
-NAME='项目资料'
-DESCRIPTION='只读资料与演示'
-PASSWORD='plain:首次设置的密码'
+title='项目资料'
+description='只读资料与演示'
+password='plain:首次设置的密码'
 ```
 
-合法的 `plain:` 密码会在启动时迁移为版本化 Argon2id 哈希。根级或应用配置中密码字段为空、重复、未知字段、格式错误或迁移失败都会 fail-closed：根级配置会阻止启动，应用配置会锁定对应应用。根 `.env`、子 `.env`、`app.json`、隐藏文件、链接和非常规文件不会通过 HTTP 提供。
+合法的根 `plain:` 密码会迁移为版本化 Argon2id 哈希。所有 `.env`、`app.json`、隐藏文件、链接和非常规文件都会统一返回 404；配置变化会在下一请求使受影响的授权失效。
 
 `/a/<应用名>/...` 是旧版地址，只对 GET/HEAD 安全地 308 重定向到规范地址；升级后旧 Cookie 不迁移，受保护应用需要重新登录。`a` 和 `_` 开头的一级目录为保留命名空间，不会作为应用公开。
 
