@@ -492,7 +492,7 @@ func TestEmbeddedDirectoryTemplateEscapesNamesAndShowsMetadata(t *testing.T) {
 		t.Fatalf("directory status=%d", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"目录浏览", "文件", " B", "&lt;资料&gt; #%.txt"} {
+	for _, want := range []string{"Explore", "文件", " B", "&lt;资料&gt; #%.txt"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("directory page missing %q: %s", want, body)
 		}
@@ -545,6 +545,10 @@ func TestDirectoryTemplateUsesServerPreviewContract(t *testing.T) {
 		`aria-modal="true"`,
 		`aria-haspopup="menu"`,
 		`datashelf.theme.v1`,
+		`datashelf.accent.v1`,
+		`app-topbar`,
+		`page-footer`,
+		`© <time id="datashelf-year"`,
 		`zoom-controls`,
 		`preview-download`,
 	} {
@@ -579,6 +583,7 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 		`data-download-url="/_download/`,
 		`kind==="markdown"`,
 		`allow-popups allow-popups-to-escape-sandbox`,
+		`navigation.hidden=kind!=="image"||!canZoom`,
 	} {
 		if !strings.Contains(body.String(), want) {
 			t.Errorf("preview action contract missing %q", want)
@@ -586,6 +591,33 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 	}
 	if strings.Contains(body.String(), "innerHTML") {
 		t.Error("template must not inject preview content with innerHTML")
+	}
+}
+
+func TestDirectoryTemplateSeparatesControlledHTMLViewAndSourcePreview(t *testing.T) {
+	s, _ := makeTestServer(t, false)
+	type item struct {
+		Name, URL, PreviewURL, PreviewKind, OpenMode, OpenURL, DownloadURL, Kind, Size, Modified string
+		CanZoom                                                                                  bool
+	}
+	var body strings.Builder
+	err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{
+		"Items": []item{{
+			Name: "report.html", URL: "/docs/report.html", PreviewKind: "text", OpenMode: "external",
+			PreviewURL: "/docs/_preview/report.html", OpenURL: "/docs/report.html", DownloadURL: "/docs/_download/report.html",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("render controlled HTML view: %v", err)
+	}
+	rendered := body.String()
+	for _, want := range []string{`href="/docs/report.html" target="_blank"`, `>预览源码</button>`, `data-preview-url="/docs/_preview/report.html"`} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("controlled HTML view missing %q", want)
+		}
+	}
+	if strings.Contains(rendered, ">新标签打开<") {
+		t.Error("controlled HTML view must expose source preview instead of a duplicate generic action")
 	}
 }
 
