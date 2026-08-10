@@ -589,8 +589,12 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 		`pointerdown`, `closeAppearance(true)`, `dialog.showModal()`,
 		`document.contains(returnTrigger)`, `canNavigate=trigger.dataset.canNavigateImages==="true"`,
 		`imageCapability(activeTrigger,"previous")`, `imageCapability(activeTrigger,"next")`,
-		`navigation.hidden=!canNavigate`, `updateShareStatus`,
+		`footer=document.getElementById("preview-foot")`, `footer.hidden=true`,
+		`hasNavigation=canNavigate&&!!(previousTarget||nextTarget)`,
+		`previous.hidden=!previousTarget`, `next.hidden=!nextTarget`,
+		`footer.hidden=!canZoom&&!hasNavigation`, `updateShareStatus`,
 		`openLink.textContent=trigger.dataset.openKind==="html-render"?"受控视图":"新窗口打开"`,
+		`.modal-foot[hidden] { display:none; }`, `.modal-head { flex-wrap:wrap; }`,
 		`node.textContent=message`, `prefers-reduced-motion`,
 	} {
 		if !strings.Contains(rendered, want) {
@@ -602,6 +606,9 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 	}
 	if strings.Contains(rendered, `entry-link[data-preview-kind="image"]`) || strings.Contains(rendered, "function imageIndex()") {
 		t.Error("image navigation must consume server-provided neighbor capabilities, not infer a DOM image sequence")
+	}
+	if strings.Contains(rendered, "previous.disabled") || strings.Contains(rendered, "next.disabled") {
+		t.Error("missing image neighbors must be hidden rather than merely disabled")
 	}
 }
 
@@ -633,6 +640,10 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 	}
 	if strings.Contains(body.String(), "innerHTML") {
 		t.Error("template must not inject preview content with innerHTML")
+	}
+	footerAt, actionsAt := strings.Index(body.String(), `id="preview-foot"`), strings.Index(body.String(), `id="preview-actions"`)
+	if footerAt < 0 || actionsAt < 0 || actionsAt > footerAt {
+		t.Error("open and download actions must be positioned in the header before the image-only footer")
 	}
 }
 
