@@ -533,7 +533,7 @@ func TestDirectoryTemplateUsesServerPreviewContract(t *testing.T) {
 		`data-can-zoom="true"`,
 		`target="_blank"`,
 		`rel="noopener noreferrer"`,
-		`资料架首页`,
+		`>资料架<`,
 		`aria-modal="true"`,
 		`aria-haspopup="menu"`,
 		`datashelf.theme.v1`,
@@ -546,6 +546,55 @@ func TestDirectoryTemplateUsesServerPreviewContract(t *testing.T) {
 	}
 	if strings.Contains(body, `data-preview-kind="svg"`) || strings.Contains(body, `data-preview-kind="zip"`) {
 		t.Error("unsafe file type was made previewable")
+	}
+}
+
+func TestPagesUseExploreTopbarAndSafeDirectoryContext(t *testing.T) {
+	s, _ := makeTestServer(t, false)
+	var body strings.Builder
+	err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{
+		"Name": "<当前目录>", "Description": "说明 <不得作为 HTML>",
+	})
+	if err != nil {
+		t.Fatalf("render directory context: %v", err)
+	}
+	rendered := body.String()
+	for _, want := range []string{
+		`class="topbar"`, `class="brand" href="/"`, `class="appearance-toggle"`,
+		`aria-label="显示偏好"`, `width:40px`, `height:40px`,
+		`data-accent="azure"`, `data-accent="forest"`, `data-accent="terracotta"`,
+		`data-theme="system"`, `data-theme="light"`, `data-theme="dark"`,
+		`data-current-year`, `https://github.com/woodcoal/data-shelf`,
+		`<h1>&lt;当前目录&gt;</h1>`, `说明 &lt;不得作为 HTML&gt;`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("directory page missing %q", want)
+		}
+	}
+	if strings.Contains(rendered, "<当前目录>") || strings.Contains(rendered, "<不得作为 HTML>") {
+		t.Error("directory context was rendered without HTML escaping")
+	}
+}
+
+func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.T) {
+	s, _ := makeTestServer(t, false)
+	var body strings.Builder
+	if err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{}); err != nil {
+		t.Fatalf("render directory scripts: %v", err)
+	}
+	rendered := body.String()
+	for _, want := range []string{
+		`datashelf.accent.v1`, `datashelf.theme.v1`, `event.key==="Escape"`,
+		`pointerdown`, `closeAppearance(true)`, `dialog.showModal()`,
+		`document.contains(returnTrigger)`, `kind!=="image"`,
+		`node.textContent=message`, `prefers-reduced-motion`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("page script missing %q", want)
+		}
+	}
+	if strings.Contains(rendered, "innerHTML") {
+		t.Error("page scripts must not render untrusted content with innerHTML")
 	}
 }
 
@@ -628,7 +677,7 @@ func TestDeepDirectoryShowsCurrentNameAndClickableAncestors(t *testing.T) {
 		t.Fatalf("directory status=%d", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{`>资料架首页<`, `>资料 应用<`, `>2026<`, `aria-current="page">交付<`, `<h1>交付</h1>`} {
+	for _, want := range []string{`>资料架<`, `>资料 应用<`, `>2026<`, `aria-current="page">交付<`, `<h1>交付</h1>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("deep directory page missing %q", want)
 		}
