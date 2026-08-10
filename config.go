@@ -20,6 +20,7 @@ import (
 )
 
 const (
+	maxEnvSize       = 64 << 10
 	argonMemory      = 32 * 1024
 	argonIterations  = 3
 	argonParallelism = 1
@@ -42,10 +43,10 @@ type appConfig struct {
 // kept separate from application configuration: it only protects applications
 // that do not have their own .env password.
 type globalConfig struct {
-	DataDir   string
-	SiteTitle string
-	Password  string
-	Version   [32]byte
+	SiteTitle   string
+	Description string
+	Password    string
+	Version     [32]byte
 }
 
 type envDocument struct {
@@ -161,10 +162,14 @@ func configFromDocument(doc envDocument, fallbackName string, raw []byte) (appCo
 	}, nil
 }
 
-func loadGlobalConfig(path, defaultDir, defaultTitle string, required bool) (globalConfig, error) {
-	cfg := globalConfig{DataDir: defaultDir, SiteTitle: defaultTitle}
+// loadRootConfig reads the sole global configuration location: <data-root>/.env.
+// A missing file is a valid public default; every malformed existing file stops
+// startup so a typo can never make protected data public.
+func loadRootConfig(root, defaultTitle string) (globalConfig, error) {
+	cfg := globalConfig{SiteTitle: defaultTitle}
+	path := filepath.Join(root, ".env")
 	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) && !required {
+	if errors.Is(err, os.ErrNotExist) {
 		return cfg, nil
 	}
 	if err != nil {
@@ -177,16 +182,13 @@ func loadGlobalConfig(path, defaultDir, defaultTitle string, required bool) (glo
 	if err != nil {
 		return globalConfig{}, fmt.Errorf("read global configuration: %w", err)
 	}
-	doc, err := parseGlobalEnv(raw)
+	doc, err := parseEnv(raw)
 	if err != nil {
 		return globalConfig{}, err
 	}
-	cfg, err = globalConfigFromDocument(doc, defaultDir, defaultTitle)
+	cfg, err = rootConfigFromDocument(doc, defaultTitle)
 	if err != nil {
 		return globalConfig{}, err
-	}
-	if !filepath.IsAbs(cfg.DataDir) {
-		cfg.DataDir = filepath.Join(filepath.Dir(path), cfg.DataDir)
 	}
 	if !strings.HasPrefix(cfg.Password, "plain:") {
 		return cfg, nil
@@ -199,7 +201,7 @@ func loadGlobalConfig(path, defaultDir, defaultTitle string, required bool) (glo
 	if err != nil {
 		return globalConfig{}, fmt.Errorf("hash global password: %w", err)
 	}
-	updated, err := replaceDocumentPassword(doc, "GLOBAL_PASSWORD", hash)
+	updated, err := replaceDocumentPassword(doc, "PASSWORD", hash)
 	if err != nil {
 		return globalConfig{}, err
 	}
@@ -210,78 +212,37 @@ func loadGlobalConfig(path, defaultDir, defaultTitle string, required bool) (glo
 	if err != nil {
 		return globalConfig{}, fmt.Errorf("verify global configuration migration: %w", err)
 	}
-	reloadedDoc, err := parseGlobalEnv(reloaded)
+	reloadedDoc, err := parseEnv(reloaded)
 	if err != nil {
 		return globalConfig{}, fmt.Errorf("verify global configuration migration: %w", err)
 	}
-	cfg, err = globalConfigFromDocument(reloadedDoc, defaultDir, defaultTitle)
+	cfg, err = rootConfigFromDocument(reloadedDoc, defaultTitle)
 	if err != nil || cfg.Password != hash {
 		return globalConfig{}, errors.New("global password migration verification failed")
-	}
-	if !filepath.IsAbs(cfg.DataDir) {
-		cfg.DataDir = filepath.Join(filepath.Dir(path), cfg.DataDir)
 	}
 	return cfg, nil
 }
 
-func parseGlobalEnv(raw []byte) (envDocument, error) {
-	doc := envDocument{values: make(map[string]string), keyCount: make(map[string]int)}
-	scanner := bufio.NewScanner(bytes.NewReader(raw))
-	scanner.Buffer(make([]byte, 1024), 64*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		doc.lines = append(doc.lines, line)
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		key, valueText, ok := strings.Cut(trimmed, "=")
-		if !ok {
-			return doc, errors.New("invalid global configuration line")
-		}
-		key = strings.TrimSpace(key)
-		if key != "DATA_DIR" && key != "SITE_TITLE" && key != "GLOBAL_PASSWORD" {
-			return doc, fmt.Errorf("unknown global configuration key %q", key)
-		}
-		value, err := parseEnvValue(strings.TrimSpace(valueText))
-		if err != nil {
-			return doc, fmt.Errorf("invalid %s value: %w", key, err)
-		}
-		doc.keyCount[key]++
-		doc.values[key] = value
-	}
-	if err := scanner.Err(); err != nil {
-		return doc, err
-	}
-	return doc, nil
-}
-
-func globalConfigFromDocument(doc envDocument, defaultDir, defaultTitle string) (globalConfig, error) {
-	for _, key := range []string{"DATA_DIR", "SITE_TITLE", "GLOBAL_PASSWORD"} {
+func rootConfigFromDocument(doc envDocument, defaultTitle string) (globalConfig, error) {
+	for _, key := range []string{"NAME", "DESCRIPTION", "PASSWORD"} {
 		if doc.keyCount[key] > 1 {
 			return globalConfig{}, fmt.Errorf("%s must appear at most once", key)
 		}
 	}
-	cfg := globalConfig{DataDir: defaultDir, SiteTitle: defaultTitle}
-	if doc.keyCount["DATA_DIR"] == 1 {
-		if doc.values["DATA_DIR"] == "" {
-			return globalConfig{}, errors.New("DATA_DIR is empty")
-		}
-		cfg.DataDir = doc.values["DATA_DIR"]
+	cfg := globalConfig{SiteTitle: defaultTitle}
+	if doc.keyCount["NAME"] == 1 && doc.values["NAME"] != "" {
+		cfg.SiteTitle = doc.values["NAME"]
 	}
-	if doc.keyCount["SITE_TITLE"] == 1 {
-		if doc.values["SITE_TITLE"] == "" {
-			return globalConfig{}, errors.New("SITE_TITLE is empty")
-		}
-		cfg.SiteTitle = doc.values["SITE_TITLE"]
+	if doc.keyCount["DESCRIPTION"] == 1 {
+		cfg.Description = doc.values["DESCRIPTION"]
 	}
-	if doc.keyCount["GLOBAL_PASSWORD"] == 1 {
-		cfg.Password = doc.values["GLOBAL_PASSWORD"]
+	if doc.keyCount["PASSWORD"] == 1 {
+		cfg.Password = doc.values["PASSWORD"]
 		if cfg.Password == "" {
-			return globalConfig{}, errors.New("GLOBAL_PASSWORD is empty")
+			return globalConfig{}, errors.New("PASSWORD is empty")
 		}
 		if !strings.HasPrefix(cfg.Password, "plain:") && !strings.HasPrefix(cfg.Password, "hash:") {
-			return globalConfig{}, errors.New("unknown GLOBAL_PASSWORD format")
+			return globalConfig{}, errors.New("unknown PASSWORD format")
 		}
 		if _, err := decodePasswordHash(cfg.Password); err != nil && !strings.HasPrefix(cfg.Password, "plain:") {
 			return globalConfig{}, err
@@ -292,6 +253,12 @@ func globalConfigFromDocument(doc envDocument, defaultDir, defaultTitle string) 
 }
 
 func parseEnv(raw []byte) (envDocument, error) {
+	if len(raw) > maxEnvSize {
+		return envDocument{}, errors.New(".env exceeds 64 KiB")
+	}
+	if !utf8.Valid(raw) || bytes.IndexByte(raw, 0) >= 0 {
+		return envDocument{}, errors.New(".env must be valid UTF-8 without NUL")
+	}
 	doc := envDocument{values: make(map[string]string), keyCount: make(map[string]int)}
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	scanner.Buffer(make([]byte, 1024), 64*1024)
@@ -304,11 +271,11 @@ func parseEnv(raw []byte) (envDocument, error) {
 		}
 		key, valueText, ok := strings.Cut(trimmed, "=")
 		if !ok {
-			return doc, fmt.Errorf("invalid .env line")
+			return doc, errors.New("invalid .env line")
 		}
 		key = strings.TrimSpace(key)
 		if key != "NAME" && key != "DESCRIPTION" && key != "PASSWORD" {
-			continue
+			return doc, fmt.Errorf("unknown .env key %q", key)
 		}
 		value, err := parseEnvValue(strings.TrimSpace(valueText))
 		if err != nil {

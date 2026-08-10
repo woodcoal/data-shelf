@@ -36,7 +36,7 @@ type server struct {
 }
 
 func newServer(root, title string, logger *log.Logger) (*server, error) {
-	return newServerWithConfig(root, title, globalConfig{DataDir: root, SiteTitle: title}, logger)
+	return newServerWithConfig(root, title, globalConfig{SiteTitle: title}, logger)
 }
 
 func newServerWithConfig(root, title string, global globalConfig, logger *log.Logger) (*server, error) {
@@ -137,6 +137,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.preview(w, r, segments[1], segments[2:])
 		return
 	}
+	if len(segments) >= 2 && segments[0] == "_download" && segments[1] != "" {
+		s.download(w, r, segments[1], segments[2:])
+		return
+	}
 	if len(segments) >= 2 && segments[0] == "a" && segments[1] != "" {
 		s.redirectLegacyApp(w, r, segments[1], segments[2:])
 		return
@@ -194,10 +198,11 @@ func (s *server) home(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.pages.ExecuteTemplate(w, "home", map[string]any{
-		"PageTitle":  s.title,
-		"Title":      s.title,
-		"Apps":       cards,
-		"SortByName": r.URL.Query().Get("sort") == "name",
+		"PageTitle":   s.title,
+		"Title":       s.title,
+		"Description": s.global.Description,
+		"Apps":        cards,
+		"SortByName":  r.URL.Query().Get("sort") == "name",
 	}); err != nil {
 		s.logger.Printf("render home: %v", err)
 	}
@@ -402,10 +407,16 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		itemURL := appURL(app.Slug, childSegments, info.IsDir())
 		previewKind, openMode := previewFor(entry.Name(), info)
 		previewResourceURL := ""
+		openResourceURL := ""
+		downloadResourceURL := ""
 		if previewKind != "none" {
 			previewResourceURL = previewURL(app.Slug, childSegments)
+			openResourceURL = previewResourceURL
 		} else {
 			previewKind = ""
+		}
+		if info.Mode().IsRegular() {
+			downloadResourceURL = downloadURL(app.Slug, childSegments)
 		}
 		kind, size := "文件", humanSize(info.Size())
 		if info.IsDir() {
@@ -415,17 +426,10 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 			Name: entry.Name(), URL: itemURL, Kind: kind, Size: size,
 			Modified:    info.ModTime().Format("2006-01-02 15:04"),
 			PreviewKind: previewKind, OpenMode: openMode, PreviewURL: previewResourceURL,
-			// These presentation fields never classify a file on the client. MT-162
-			// replaces their underlying routes with its authenticated open/download
-			// endpoints while preserving this template contract.
-			OpenURL: previewResourceURL,
-			DownloadURL: func() string {
-				if info.IsDir() {
-					return ""
-				}
-				return itemURL
-			}(),
-			CanZoom: previewKind == "image",
+			// The template consumes only server-generated capabilities. In particular,
+			// DownloadURL uses the authenticated attachment endpoint rather than the
+			// file's browse URL, so the browser cannot choose an unsafe disposition.
+			OpenURL: openResourceURL, DownloadURL: downloadResourceURL, CanZoom: previewKind == "image",
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -472,7 +476,9 @@ func previewKindFor(name string) string {
 		return "image"
 	case ".pdf":
 		return "pdf"
-	case ".txt", ".md", ".markdown", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".html", ".htm", ".js", ".mjs", ".css", ".go", ".c", ".h", ".cs", ".ts", ".tsx", ".jsx", ".py", ".sh", ".sql":
+	case ".md", ".markdown":
+		return "markdown"
+	case ".txt", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".html", ".htm", ".js", ".mjs", ".css", ".go", ".c", ".h", ".cs", ".ts", ".tsx", ".jsx", ".py", ".sh", ".sql":
 		return "text"
 	default:
 		return ""
@@ -501,12 +507,69 @@ func (s *server) preview(w http.ResponseWriter, r *http.Request, slug string, se
 		return
 	}
 	kind, _ := previewFor(info.Name(), info)
+	if kind == "none" && isMarkdownName(info.Name()) {
+		kind = "markdown"
+	}
 	if kind == "none" {
 		http.NotFound(w, r)
 		return
 	}
+	if kind == "markdown" {
+		s.serveMarkdown(w, r, slug, segments, target, info)
+		return
+	}
 	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'")
 	s.serveFile(w, r, target, info, false)
+}
+
+func (s *server) serveMarkdown(w http.ResponseWriter, r *http.Request, slug string, segments []string, path string, info fs.FileInfo) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Content-Security-Policy", "sandbox allow-popups allow-popups-to-escape-sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; media-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'")
+	if info.Size() > maxMarkdownInput {
+		http.Error(w, "Markdown 文件过大", http.StatusRequestEntityTooLarge)
+		return
+	}
+	source, err := os.ReadFile(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	body, err := renderMarkdown(source, slug, segments)
+	if err != nil {
+		if errors.Is(err, errMarkdownTooLarge) {
+			http.Error(w, "Markdown 文件过大", http.StatusRequestEntityTooLarge)
+		} else if errors.Is(err, errMarkdownUnsupportedEncoding) {
+			http.Error(w, "Markdown 编码不受支持", http.StatusUnsupportedMediaType)
+		} else {
+			http.Error(w, "Markdown 无法渲染", http.StatusUnprocessableEntity)
+		}
+		return
+	}
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Markdown 预览</title><style>body{margin:0 auto;max-width:72rem;padding:2rem;font:16px/1.65 system-ui,sans-serif}pre{overflow:auto;padding:1rem;background:#f4f4f4}table{border-collapse:collapse}th,td{border:1px solid #bbb;padding:.4rem}</style></head><body>%s</body></html>", body)
+}
+
+func (s *server) download(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
+	app, ok := s.apps[slug]
+	if !ok || len(segments) == 0 || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		http.NotFound(w, r)
+		return
+	}
+	cfg := s.effectiveConfig(app)
+	if !s.authorizeApp(w, r, slug, cfg) {
+		return
+	}
+	target, info, err := resolveSafePath(app.Dir, segments)
+	if err != nil || !info.Mode().IsRegular() {
+		http.NotFound(w, r)
+		return
+	}
+	s.serveDownload(w, r, target, info)
 }
 
 func previewFor(name string, info fs.FileInfo) (kind, openMode string) {
@@ -519,12 +582,40 @@ func previewFor(name string, info fs.FileInfo) (kind, openMode string) {
 		return "image", "modal"
 	case ".pdf":
 		return "pdf", "modal"
-	case ".txt", ".md", ".markdown", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".go", ".c", ".h", ".cs", ".ts", ".tsx", ".jsx", ".py", ".sh", ".sql", ".html", ".htm", ".js", ".mjs", ".css":
+	case ".md", ".markdown":
+		if info.Size() <= 1<<20 {
+			return "markdown", "modal"
+		}
+	case ".txt", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".go", ".c", ".h", ".cs", ".ts", ".tsx", ".jsx", ".py", ".sh", ".sql", ".html", ".htm", ".js", ".mjs", ".css":
 		if info.Size() <= 2<<20 {
 			return "text", "modal"
 		}
 	}
 	return "none", "external"
+}
+
+func isMarkdownName(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	return ext == ".md" || ext == ".markdown"
+}
+
+func (s *server) serveDownload(w http.ResponseWriter, r *http.Request, path string, info fs.FileInfo) {
+	file, err := os.Open(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || openedInfo.Name() != info.Name() {
+		http.NotFound(w, r)
+		return
+	}
+	contentType, _ := contentDisposition(path, false)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": info.Name()}))
+	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
 }
 
 func (s *server) serveFile(w http.ResponseWriter, r *http.Request, path string, info fs.FileInfo, rootIndex bool) {
@@ -603,6 +694,14 @@ func appURL(slug string, segments []string, directory bool) string {
 
 func previewURL(slug string, segments []string) string {
 	parts := []string{"", "_preview", url.PathEscape(slug)}
+	for _, segment := range segments {
+		parts = append(parts, url.PathEscape(segment))
+	}
+	return strings.Join(parts, "/")
+}
+
+func downloadURL(slug string, segments []string) string {
+	parts := []string{"", "_download", url.PathEscape(slug)}
 	for _, segment := range segments {
 		parts = append(parts, url.PathEscape(segment))
 	}
