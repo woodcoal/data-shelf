@@ -246,11 +246,9 @@ func (s *server) auth(w http.ResponseWriter, r *http.Request, slug string) {
 			return
 		}
 		s.limiter.reset(slug, source)
-		http.SetCookie(w, &http.Cookie{
-			Name: s.sessions.cookieName(slug), Value: s.sessions.issue(slug, cfg.Version),
-			Path: "/" + url.PathEscape(slug) + "/", HttpOnly: true, SameSite: http.SameSiteLaxMode,
-			Secure: requestIsHTTPS(r),
-		})
+		for _, cookie := range s.sessionCookies(slug, cfg.Version, requestIsHTTPS(r)) {
+			http.SetCookie(w, cookie)
+		}
 		http.Redirect(w, r, target, http.StatusSeeOther)
 	default:
 		w.Header().Set("Allow", "GET, HEAD, POST")
@@ -344,13 +342,23 @@ func (s *server) authorizeApp(w http.ResponseWriter, r *http.Request, slug strin
 		http.Error(w, "管理员需修改本地配置", http.StatusLocked)
 		return false
 	}
-	cookie, err := r.Cookie(s.sessions.cookieName(slug))
+	cookie, err := r.Cookie(s.sessions.cookieNameForRequest(slug, r.URL.EscapedPath()))
 	if err != nil || !s.sessions.valid(cookie.Value, slug, cfg.Version) {
 		target := r.URL.EscapedPath()
 		http.Redirect(w, r, "/_auth/"+url.PathEscape(slug)+"?return="+url.QueryEscape(target), http.StatusSeeOther)
 		return false
 	}
 	return true
+}
+
+func (s *server) sessionCookies(slug string, version [32]byte, secure bool) []*http.Cookie {
+	value := s.sessions.issue(slug, version)
+	escapedSlug := url.PathEscape(slug)
+	return []*http.Cookie{
+		{Name: s.sessions.cookieName(slug), Value: value, Path: "/" + escapedSlug + "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure},
+		{Name: s.sessions.controlledCookieName(slug, "preview"), Value: value, Path: "/_preview/" + escapedSlug + "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure},
+		{Name: s.sessions.controlledCookieName(slug, "download"), Value: value, Path: "/_download/" + escapedSlug + "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure},
+	}
 }
 
 func trimTrailingEmpty(segments []string) []string {

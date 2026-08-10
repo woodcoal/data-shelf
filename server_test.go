@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -73,6 +74,22 @@ func login(t *testing.T, s *server, slug string) *http.Cookie {
 }
 
 func loginWithPassword(t *testing.T, s *server, slug, password string) *http.Cookie {
+	return loginCookies(t, s, slug, password)[0]
+}
+
+func loginCookieForOperation(t *testing.T, s *server, slug, password, operation string) *http.Cookie {
+	t.Helper()
+	wantName := s.sessions.controlledCookieName(slug, operation)
+	for _, cookie := range loginCookies(t, s, slug, password) {
+		if cookie.Name == wantName {
+			return cookie
+		}
+	}
+	t.Fatalf("missing %s session cookie", operation)
+	return nil
+}
+
+func loginCookies(t *testing.T, s *server, slug, password string) []*http.Cookie {
 	t.Helper()
 	form := url.Values{"password": {password}, "return": {appURL(slug, []string{"secret.txt"}, false)}}
 	r := httptest.NewRequest(http.MethodPost, "/_auth/"+url.PathEscape(slug), strings.NewReader(form.Encode()))
@@ -84,10 +101,10 @@ func loginWithPassword(t *testing.T, s *server, slug, password string) *http.Coo
 		t.Fatalf("login status=%d body=%s", w.Code, w.Body.String())
 	}
 	result := w.Result().Cookies()
-	if len(result) != 1 {
-		t.Fatalf("expected session cookie, got %d", len(result))
+	if len(result) != 3 {
+		t.Fatalf("expected three scoped session cookies, got %d", len(result))
 	}
-	return result[0]
+	return result
 }
 
 func TestCanonicalRoutesLegacyRedirectAndReturnTargets(t *testing.T) {
@@ -109,9 +126,22 @@ func TestCanonicalRoutesLegacyRedirectAndReturnTargets(t *testing.T) {
 	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Location"), "return="+url.QueryEscape(appURL(slug, []string{"secret.txt"}, false))) {
 		t.Fatalf("deep-link login redirect status=%d location=%q", w.Code, w.Header().Get("Location"))
 	}
-	cookie := login(t, s, slug)
+	cookies := loginCookies(t, s, slug, "测试密码123")
+	cookie := cookies[0]
 	if cookie.Path != canonicalRoot {
 		t.Fatalf("cookie path=%q want=%q", cookie.Path, canonicalRoot)
+	}
+	paths := map[string]string{}
+	for _, issued := range cookies {
+		paths[issued.Name] = issued.Path
+	}
+	for name, wantPath := range map[string]string{
+		s.sessions.controlledCookieName(slug, "preview"):  "/_preview/" + url.PathEscape(slug) + "/",
+		s.sessions.controlledCookieName(slug, "download"): "/_download/" + url.PathEscape(slug) + "/",
+	} {
+		if paths[name] != wantPath {
+			t.Errorf("cookie %s path=%q want=%q", name, paths[name], wantPath)
+		}
 	}
 	for _, target := range []string{"https://example.invalid/", "/other/secret.txt", "/a/" + url.PathEscape(slug) + "/secret.txt", "/" + url.PathEscape(slug) + "/%252e%252e/secret.txt"} {
 		if got := safeReturnTarget(target, slug); got != canonicalRoot {
@@ -223,17 +253,93 @@ func TestPreviewEndpointRemainsClassifiedAndAuthorized(t *testing.T) {
 	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
 		t.Fatalf("unauthenticated preview status=%d cache=%q", w.Code, w.Header().Get("Cache-Control"))
 	}
-	cookie := login(t, s, slug)
-	w = request(t, s, http.MethodGet, previewURL(slug, []string{"note.txt"}), nil, cookie)
+	previewCookie := loginCookieForOperation(t, s, slug, "测试密码123", "preview")
+	w = request(t, s, http.MethodGet, previewURL(slug, []string{"note.txt"}), nil, previewCookie)
 	if w.Code != http.StatusOK || w.Body.String() != "previewable" || !strings.Contains(w.Header().Get("Content-Security-Policy"), "sandbox") {
 		t.Fatalf("preview response status=%d body=%q csp=%q", w.Code, w.Body.String(), w.Header().Get("Content-Security-Policy"))
 	}
 	if err := os.WriteFile(filepath.Join(appDir, "unsafe.svg"), []byte("<svg/>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w = request(t, s, http.MethodGet, previewURL(slug, []string{"unsafe.svg"}), nil, cookie)
+	w = request(t, s, http.MethodGet, previewURL(slug, []string{"unsafe.svg"}), nil, previewCookie)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("unsafe preview status=%d", w.Code)
+	}
+}
+
+func TestScopedSessionCookiesAuthorizePreviewAndDownloadWithoutCrossAppAccess(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	appDir := s.apps[slug].Dir
+	asciiSlug := "app"
+	asciiDir := filepath.Join(s.root, asciiSlug)
+	if err := os.Rename(appDir, asciiDir); err != nil {
+		t.Fatal(err)
+	}
+	delete(s.apps, slug)
+	info, err := os.Stat(asciiDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.apps[asciiSlug] = &application{Slug: asciiSlug, Dir: asciiDir, ModTime: info.ModTime()}
+	slug, appDir = asciiSlug, asciiDir
+	if err := os.WriteFile(filepath.Join(appDir, "note.txt"), []byte("previewable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := "other"
+	secondDir := filepath.Join(s.root, second)
+	if err := os.Mkdir(secondDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secondDir, "note.txt"), []byte("other"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secondDir, ".env"), []byte(fmt.Sprintf("PASSWORD='%s'\n", protectedHash(t))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err = os.Stat(secondDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.apps[second] = &application{Slug: second, Dir: secondDir, ModTime: info.ModTime()}
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	httpServer := httptest.NewServer(s)
+	defer httpServer.Close()
+	form := url.Values{"password": {"测试密码123"}, "return": {appURL(slug, nil, true)}}
+	loginRequest, err := http.NewRequest(http.MethodPost, httpServer.URL+"/_auth/"+url.PathEscape(slug), strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := client.Do(loginRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("login status=%d", response.StatusCode)
+	}
+	for _, target := range []string{previewURL(slug, []string{"note.txt"}), downloadURL(slug, []string{"note.txt"})} {
+		response, err = client.Get(httpServer.URL + target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("controlled endpoint %s status=%d", target, response.StatusCode)
+		}
+	}
+	response, err = client.Get(httpServer.URL + previewURL(second, []string{"note.txt"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther || !strings.Contains(response.Header.Get("Location"), "/_auth/"+url.PathEscape(second)) {
+		t.Fatalf("first application session crossed into second application: status=%d location=%q", response.StatusCode, response.Header.Get("Location"))
 	}
 }
 
@@ -599,8 +705,8 @@ func TestMarkdownPreviewIsSanitizedAndAuthorizedBeforeRead(t *testing.T) {
 	if w.Code != http.StatusSeeOther || strings.Contains(w.Body.String(), "标题") {
 		t.Fatalf("unauthorized markdown leaked: status=%d body=%q", w.Code, w.Body.String())
 	}
-	cookie := login(t, s, slug)
-	w = request(t, s, http.MethodGet, preview, nil, cookie)
+	previewCookie := loginCookieForOperation(t, s, slug, "测试密码123", "preview")
+	w = request(t, s, http.MethodGet, preview, nil, previewCookie)
 	if w.Code != http.StatusOK {
 		t.Fatalf("markdown preview status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -633,8 +739,8 @@ func TestMarkdownLimitsAndDownloadEndpointKeepProtection(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(appDir, "archive.zip"), []byte("zip data"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cookie := login(t, s, slug)
-	w := request(t, s, http.MethodGet, previewURL(slug, []string{"large.md"}), nil, cookie)
+	previewCookie := loginCookieForOperation(t, s, slug, "测试密码123", "preview")
+	w := request(t, s, http.MethodGet, previewURL(slug, []string{"large.md"}), nil, previewCookie)
 	if w.Code != http.StatusRequestEntityTooLarge || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
 		t.Fatalf("large markdown status=%d cache=%q", w.Code, w.Header().Get("Cache-Control"))
 	}
@@ -643,7 +749,8 @@ func TestMarkdownLimitsAndDownloadEndpointKeepProtection(t *testing.T) {
 	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
 		t.Fatalf("unauthorized download status=%d", w.Code)
 	}
-	w = request(t, s, http.MethodGet, download, nil, cookie)
+	downloadCookie := loginCookieForOperation(t, s, slug, "测试密码123", "download")
+	w = request(t, s, http.MethodGet, download, nil, downloadCookie)
 	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Disposition"), "attachment;") || w.Body.String() != "zip data" {
 		t.Fatalf("download status=%d disposition=%q body=%q", w.Code, w.Header().Get("Content-Disposition"), w.Body.String())
 	}
