@@ -385,8 +385,9 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		return
 	}
 	type item struct {
-		Name, URL, Kind, Size, Modified   string
-		PreviewKind, OpenMode, PreviewURL string
+		Name, URL, Kind, Size, Modified                         string
+		PreviewKind, OpenMode, PreviewURL, OpenURL, DownloadURL string
+		CanZoom                                                 bool
 	}
 	items := make([]item, 0, len(entries))
 	for _, entry := range entries {
@@ -414,6 +415,17 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 			Name: entry.Name(), URL: itemURL, Kind: kind, Size: size,
 			Modified:    info.ModTime().Format("2006-01-02 15:04"),
 			PreviewKind: previewKind, OpenMode: openMode, PreviewURL: previewResourceURL,
+			// These presentation fields never classify a file on the client. MT-162
+			// replaces their underlying routes with its authenticated open/download
+			// endpoints while preserving this template contract.
+			OpenURL: previewResourceURL,
+			DownloadURL: func() string {
+				if info.IsDir() {
+					return ""
+				}
+				return itemURL
+			}(),
+			CanZoom: previewKind == "image",
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
