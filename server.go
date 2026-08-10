@@ -35,6 +35,35 @@ type server struct {
 	pages    *template.Template
 }
 
+// directoryItem is the complete, server-authored contract consumed by the
+// embedded browser.  In particular, neither the template nor its script has
+// to infer a file type, build a controlled URL, or discover image neighbours.
+type directoryItem struct {
+	Name, URL, Kind, Size, Modified                      string
+	PreviewKind, OpenKind, OpenMode, PreviewURL, OpenURL string
+	DownloadURL                                          string
+	CanZoom, CanNavigateImages                           bool
+	PreviousImage, NextImage                             *imageNavigation
+	Share                                                shareStatus
+}
+
+// imageNavigation intentionally contains only already-authorized, generated
+// capabilities. It never exposes a disk path or lets a client select a file.
+type imageNavigation struct {
+	Name, PreviewURL, OpenURL, DownloadURL string
+	CanZoom                                bool
+}
+
+// shareStatus is deliberately credential-free. The current authenticated
+// directory response may tell the UI whether a configured share is usable, but
+// it never includes its token, password, hash, configured target path or ID.
+type shareStatus struct {
+	State            string
+	RequiresPassword bool
+	ExpiresAt        string
+	CanDownload      bool
+}
+
 func newServer(root, title string, logger *log.Logger) (*server, error) {
 	return newServerWithConfig(root, title, globalConfig{SiteTitle: title}, logger)
 }
@@ -134,11 +163,11 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(segments) >= 2 && segments[0] == "_preview" && segments[1] != "" {
-		s.preview(w, r, segments[1], segments[2:])
+		s.redirectLegacyControlled(w, r, segments[1], "_preview", segments[2:])
 		return
 	}
 	if len(segments) >= 2 && segments[0] == "_download" && segments[1] != "" {
-		s.download(w, r, segments[1], segments[2:])
+		s.redirectLegacyControlled(w, r, segments[1], "_download", segments[2:])
 		return
 	}
 	if len(segments) >= 2 && segments[0] == "a" && segments[1] != "" {
@@ -150,6 +179,27 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// redirectLegacyControlled keeps old links useful without relying on a
+// site-wide cookie. It validates only routing syntax; target lookup and file
+// metadata stay behind the canonical application-prefixed authorization path.
+func (s *server) redirectLegacyControlled(w http.ResponseWriter, r *http.Request, slug, operation string, segments []string) {
+	if (r.Method != http.MethodGet && r.Method != http.MethodHead) || len(segments) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	if _, ok := s.apps[slug]; !ok {
+		http.NotFound(w, r)
+		return
+	}
+	for _, segment := range segments {
+		if segment == "" || isPrivateName(segment) {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	http.Redirect(w, r, controlledURL(slug, operation, segments), http.StatusPermanentRedirect)
 }
 
 func (s *server) redirectLegacyApp(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
@@ -294,6 +344,21 @@ func (s *server) serveApp(w http.ResponseWriter, r *http.Request, slug string, s
 	if !s.authorizeApp(w, r, slug, cfg) {
 		return
 	}
+	if len(segments) >= 2 && strings.HasPrefix(segments[0], "_") {
+		switch segments[0] {
+		case "_preview":
+			s.preview(w, r, slug, segments[1:])
+		case "_download":
+			s.download(w, r, slug, segments[1:])
+		case "_html":
+			s.htmlShell(w, r, slug, segments[1:])
+		case "_html-content":
+			s.htmlContent(w, r, slug, segments[1:])
+		default:
+			http.NotFound(w, r)
+		}
+		return
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -323,7 +388,8 @@ func (s *server) serveApp(w http.ResponseWriter, r *http.Request, slug string, s
 		if len(pathSegments) == 0 {
 			indexPath, indexInfo, indexErr := resolveSafePath(app.Dir, []string{"index.html"})
 			if indexErr == nil && indexInfo.Mode().IsRegular() {
-				s.serveFile(w, r, indexPath, indexInfo, true)
+				_ = indexPath
+				http.Redirect(w, r, htmlURL(slug, []string{indexInfo.Name()}), http.StatusPermanentRedirect)
 				return
 			}
 		}
@@ -354,10 +420,11 @@ func (s *server) authorizeApp(w http.ResponseWriter, r *http.Request, slug strin
 func (s *server) sessionCookies(slug string, version [32]byte, secure bool) []*http.Cookie {
 	value := s.sessions.issue(slug, version)
 	escapedSlug := url.PathEscape(slug)
+	appPath := "/" + escapedSlug + "/"
 	return []*http.Cookie{
-		{Name: s.sessions.cookieName(slug), Value: value, Path: "/" + escapedSlug + "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure},
-		{Name: s.sessions.controlledCookieName(slug, "preview"), Value: value, Path: "/_preview/" + escapedSlug + "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure},
-		{Name: s.sessions.controlledCookieName(slug, "download"), Value: value, Path: "/_download/" + escapedSlug + "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure},
+		{Name: s.sessions.cookieName(slug), Value: value, Path: appPath, HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure},
+		{Name: s.sessions.controlledCookieName(slug, "preview"), Value: value, Path: appPath, HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure},
+		{Name: s.sessions.controlledCookieName(slug, "download"), Value: value, Path: appPath, HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure},
 	}
 }
 
@@ -397,12 +464,8 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		s.renderErrorPage(w, r, http.StatusForbidden, "无法访问此目录", "当前资料无法读取。请联系资料管理员确认目录权限。", appURL(app.Slug, trimTrailingEmpty(segments), true))
 		return
 	}
-	type item struct {
-		Name, URL, Kind, Size, Modified                         string
-		PreviewKind, OpenMode, PreviewURL, OpenURL, DownloadURL string
-		CanZoom                                                 bool
-	}
-	items := make([]item, 0, len(entries))
+	shares := loadShareStatuses(dir, time.Now())
+	items := make([]directoryItem, 0, len(entries))
 	for _, entry := range entries {
 		if isPrivateName(entry.Name()) || entry.Type()&os.ModeSymlink != 0 {
 			continue
@@ -426,18 +489,32 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		if info.Mode().IsRegular() {
 			downloadResourceURL = downloadURL(app.Slug, childSegments)
 		}
+		openKind := "download"
+		if info.IsDir() {
+			openKind = "directory"
+		} else if isHTMLName(entry.Name()) {
+			openKind = "html-render"
+			openResourceURL = htmlURL(app.Slug, childSegments)
+		} else if previewKind != "" {
+			openKind = "file"
+		}
 		kind, size := "文件", humanSize(info.Size())
 		if info.IsDir() {
 			kind, size = "目录", ""
 		}
-		items = append(items, item{
+		share := shareStatus{State: "disabled"}
+		if configured, ok := shares[entry.Name()]; ok {
+			share = configured
+		}
+		items = append(items, directoryItem{
 			Name: entry.Name(), URL: itemURL, Kind: kind, Size: size,
 			Modified:    info.ModTime().Format("2006-01-02 15:04"),
-			PreviewKind: previewKind, OpenMode: openMode, PreviewURL: previewResourceURL,
+			PreviewKind: previewKind, OpenKind: openKind, OpenMode: openMode, PreviewURL: previewResourceURL,
 			// The template consumes only server-generated capabilities. In particular,
 			// DownloadURL uses the authenticated attachment endpoint rather than the
 			// file's browse URL, so the browser cannot choose an unsafe disposition.
 			OpenURL: openResourceURL, DownloadURL: downloadResourceURL, CanZoom: previewKind == "image",
+			Share: share,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -446,6 +523,23 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		}
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
 	})
+	imageIndexes := make([]int, 0, len(items))
+	for index := range items {
+		if items[index].PreviewKind == "image" {
+			imageIndexes = append(imageIndexes, index)
+		}
+	}
+	if len(imageIndexes) > 1 {
+		for position, index := range imageIndexes {
+			items[index].CanNavigateImages = true
+			if position > 0 {
+				items[index].PreviousImage = imageCapability(items[imageIndexes[position-1]])
+			}
+			if position+1 < len(imageIndexes) {
+				items[index].NextImage = imageCapability(items[imageIndexes[position+1]])
+			}
+		}
+	}
 	type crumb struct{ Name, URL string }
 	crumbs := []crumb{{cfg.Name, appURL(app.Slug, nil, true)}}
 	for i, segment := range segments {
@@ -473,6 +567,10 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 	}); err != nil {
 		s.logger.Printf("render directory: %v", err)
 	}
+}
+
+func imageCapability(item directoryItem) *imageNavigation {
+	return &imageNavigation{Name: item.Name, PreviewURL: item.PreviewURL, OpenURL: item.OpenURL, DownloadURL: item.DownloadURL, CanZoom: item.CanZoom}
 }
 
 // previewKindFor is the sole format allow-list used by the embedded UI. The
@@ -528,6 +626,69 @@ func (s *server) preview(w http.ResponseWriter, r *http.Request, slug string, se
 	}
 	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'")
 	s.serveFile(w, r, target, info, false)
+}
+
+// htmlShell is a trusted, minimal wrapper. The untrusted file never shares its
+// origin with this page: it is served in a second route with both iframe and
+// response-header sandboxing.
+func (s *server) htmlShell(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
+	target, info, ok := s.controlledHTMLTarget(w, r, slug, segments)
+	if !ok {
+		return
+	}
+	_ = target
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Permissions-Policy", "accelerometer=(), camera=(), clipboard-read=(), clipboard-write=(), geolocation=(), microphone=(), payment=(), usb=()")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'")
+	if r.Method == http.MethodHead {
+		return
+	}
+	name := template.HTMLEscapeString(info.Name())
+	contentURL := template.HTMLEscapeString(htmlContentURL(slug, segments))
+	previewURL := template.HTMLEscapeString(previewURL(slug, segments))
+	downloadURL := template.HTMLEscapeString(downloadURL(slug, segments))
+	_, _ = fmt.Fprintf(w, "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>%s - 受控 HTML 视图</title><style>body{margin:0;font:16px/1.5 system-ui,sans-serif;color:#162234}header{display:flex;gap:12px;align-items:center;padding:12px 16px;border-bottom:1px solid #dce4ef}h1{font-size:1rem;flex:1;margin:0;overflow-wrap:anywhere}a{color:#075aaf}iframe{width:100%%;height:calc(100vh - 58px);border:0}</style></head><body><header><h1>%s</h1><a href=\"%s\">源码预览</a><a href=\"%s\" download>下载</a></header><iframe title=\"%s\" src=\"%s\" sandbox></iframe></body></html>", name, name, previewURL, downloadURL, name, contentURL)
+}
+
+func (s *server) htmlContent(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
+	target, info, ok := s.controlledHTMLTarget(w, r, slug, segments)
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; script-src 'none'; connect-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Permissions-Policy", "accelerometer=(), camera=(), clipboard-read=(), clipboard-write=(), geolocation=(), microphone=(), payment=(), usb=()")
+	s.serveFile(w, r, target, info, true)
+}
+
+func (s *server) controlledHTMLTarget(w http.ResponseWriter, r *http.Request, slug string, segments []string) (string, fs.FileInfo, bool) {
+	if len(segments) == 0 || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		http.NotFound(w, r)
+		return "", nil, false
+	}
+	for _, segment := range segments {
+		if segment == "" || isPrivateName(segment) {
+			http.NotFound(w, r)
+			return "", nil, false
+		}
+	}
+	app, ok := s.apps[slug]
+	if !ok {
+		http.NotFound(w, r)
+		return "", nil, false
+	}
+	target, info, err := resolveSafePath(app.Dir, segments)
+	if err != nil || !info.Mode().IsRegular() || !isHTMLName(info.Name()) {
+		http.NotFound(w, r)
+		return "", nil, false
+	}
+	return target, info, true
 }
 
 func (s *server) serveMarkdown(w http.ResponseWriter, r *http.Request, slug string, segments []string, path string, info fs.FileInfo) {
@@ -605,6 +766,11 @@ func previewFor(name string, info fs.FileInfo) (kind, openMode string) {
 func isMarkdownName(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
 	return ext == ".md" || ext == ".markdown"
+}
+
+func isHTMLName(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	return ext == ".html" || ext == ".htm"
 }
 
 func (s *server) serveDownload(w http.ResponseWriter, r *http.Request, path string, info fs.FileInfo) {
@@ -701,7 +867,19 @@ func appURL(slug string, segments []string, directory bool) string {
 }
 
 func previewURL(slug string, segments []string) string {
-	parts := []string{"", "_preview", url.PathEscape(slug)}
+	return controlledURL(slug, "_preview", segments)
+}
+
+func htmlURL(slug string, segments []string) string {
+	return controlledURL(slug, "_html", segments)
+}
+
+func htmlContentURL(slug string, segments []string) string {
+	return controlledURL(slug, "_html-content", segments)
+}
+
+func controlledURL(slug, operation string, segments []string) string {
+	parts := []string{"", url.PathEscape(slug), operation}
 	for _, segment := range segments {
 		parts = append(parts, url.PathEscape(segment))
 	}
@@ -709,11 +887,7 @@ func previewURL(slug string, segments []string) string {
 }
 
 func downloadURL(slug string, segments []string) string {
-	parts := []string{"", "_download", url.PathEscape(slug)}
-	for _, segment := range segments {
-		parts = append(parts, url.PathEscape(segment))
-	}
-	return strings.Join(parts, "/")
+	return controlledURL(slug, "_download", segments)
 }
 
 func setPageSecurityHeaders(w http.ResponseWriter) {
