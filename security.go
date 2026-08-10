@@ -47,10 +47,10 @@ func (m *sessionManager) controlledCookieName(app, operation string) string {
 
 func (m *sessionManager) cookieNameForRequest(app, escapedPath string) string {
 	escapedApp := url.PathEscape(app)
-	if strings.HasPrefix(escapedPath, "/_preview/"+escapedApp+"/") {
+	if strings.HasPrefix(escapedPath, "/"+escapedApp+"/_preview/") {
 		return m.controlledCookieName(app, "preview")
 	}
-	if strings.HasPrefix(escapedPath, "/_download/"+escapedApp+"/") {
+	if strings.HasPrefix(escapedPath, "/"+escapedApp+"/_download/") {
 		return m.controlledCookieName(app, "download")
 	}
 	return m.cookieName(app)

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 var (
@@ -136,8 +137,8 @@ func TestCanonicalRoutesLegacyRedirectAndReturnTargets(t *testing.T) {
 		paths[issued.Name] = issued.Path
 	}
 	for name, wantPath := range map[string]string{
-		s.sessions.controlledCookieName(slug, "preview"):  "/_preview/" + url.PathEscape(slug) + "/",
-		s.sessions.controlledCookieName(slug, "download"): "/_download/" + url.PathEscape(slug) + "/",
+		s.sessions.controlledCookieName(slug, "preview"):  "/" + url.PathEscape(slug) + "/",
+		s.sessions.controlledCookieName(slug, "download"): "/" + url.PathEscape(slug) + "/",
 	} {
 		if paths[name] != wantPath {
 			t.Errorf("cookie %s path=%q want=%q", name, paths[name], wantPath)
@@ -446,7 +447,7 @@ func TestPrivateLinkedAndTraversalPathsAreDenied(t *testing.T) {
 	}
 }
 
-func TestRootIndexRunsButNestedHTMLIsPlainText(t *testing.T) {
+func TestHTMLFilesUseControlledRoutesInsteadOfNakedSameOriginRendering(t *testing.T) {
 	s, slug := makeTestServer(t, false)
 	appDir := s.apps[slug].Dir
 	if err := os.WriteFile(filepath.Join(appDir, "index.html"), []byte("<h1>root</h1>"), 0o644); err != nil {
@@ -459,8 +460,8 @@ func TestRootIndexRunsButNestedHTMLIsPlainText(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := request(t, s, http.MethodGet, appURL(slug, nil, true), nil)
-	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") {
-		t.Fatalf("root index status=%d type=%q", w.Code, w.Header().Get("Content-Type"))
+	if w.Code != http.StatusPermanentRedirect || w.Header().Get("Location") != htmlURL(slug, []string{"index.html"}) {
+		t.Fatalf("root index status=%d location=%q", w.Code, w.Header().Get("Location"))
 	}
 	w = request(t, s, http.MethodGet, appURL(slug, []string{"nested", "index.html"}, false), nil)
 	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/plain; charset=utf-8" {
@@ -608,13 +609,9 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 
 func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) {
 	s, _ := makeTestServer(t, false)
-	type item struct {
-		Name, URL, PreviewURL, PreviewKind, OpenMode, OpenURL, DownloadURL, Kind, Size, Modified string
-		CanZoom                                                                                  bool
-	}
 	var body strings.Builder
 	err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{
-		"Items": []item{{
+		"Items": []directoryItem{{
 			Name: "guide.md", URL: "/guide.md", PreviewKind: "markdown", OpenMode: "modal",
 			PreviewURL: "/_preview/资料/guide.md", OpenURL: "/_preview/资料/guide.md", DownloadURL: "/_download/资料/guide.md",
 		}},
@@ -640,12 +637,9 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 
 func TestDirectoryTemplateHonorsServerDownloadOpenMode(t *testing.T) {
 	s, _ := makeTestServer(t, false)
-	type item struct {
-		Name, URL, PreviewURL, PreviewKind, OpenMode, Kind, Size, Modified string
-	}
 	var body strings.Builder
 	err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{
-		"Items": []item{{Name: "archive.zip", URL: "/archive.zip", OpenMode: "download", Kind: "文件"}},
+		"Items": []directoryItem{{Name: "archive.zip", URL: "/archive.zip", OpenKind: "download", OpenMode: "download", Kind: "文件"}},
 	})
 	if err != nil {
 		t.Fatalf("render download entry: %v", err)
@@ -671,6 +665,69 @@ func TestPreviewKindForUsesNarrowAllowList(t *testing.T) {
 		if got := previewKindFor(name); got != want {
 			t.Errorf("previewKindFor(%q)=%q, want %q", name, got, want)
 		}
+	}
+}
+
+func TestDirectoryPublishesOnlyServerAuthoredPreviewAndShareCapabilities(t *testing.T) {
+	s, slug := makeTestServer(t, false)
+	appDir := s.apps[slug].Dir
+	for _, name := range []string{"a.png", "b.jpg", "page.html"} {
+		if err := os.WriteFile(filepath.Join(appDir, name), []byte("content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token := strings.Repeat("A", 43) // 32 zero bytes, canonical Raw Base64URL.
+	env := fmt.Sprintf("PASSWORD='%s'\nSHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='a.png'\nSHARE_DOC_TOKEN='%s'\nSHARE_DOC_EXPIRES_AT='%s'\nSHARE_DOC_PASSWORD='%s'\nSHARE_DOC_ALLOW_DOWNLOAD='false'\n", protectedHash(t), token, time.Now().Add(24*time.Hour).Format(time.RFC3339), protectedHash(t))
+	if err := os.WriteFile(filepath.Join(appDir, ".env"), []byte(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := request(t, s, http.MethodGet, appURL(slug, nil, true), nil, login(t, s, slug))
+	if w.Code != http.StatusOK {
+		t.Fatalf("directory status=%d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`data-open-kind="html-render"`, `data-can-navigate-images="true"`,
+		`data-next-image-name="b.jpg"`, `data-previous-image-name="a.png"`,
+		`data-share-state="available"`, `data-share-requires-password="true"`,
+		`/` + url.PathEscape(slug) + `/_html/page.html`,
+		`/` + url.PathEscape(slug) + `/_preview/a.png`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("directory capability missing %q", want)
+		}
+	}
+	if strings.Contains(body, token) || strings.Contains(body, protectedHash(t)) || strings.Contains(body, "SHARE_DOC") {
+		t.Error("directory response leaked a share credential or management identifier")
+	}
+}
+
+func TestHTMLControlledRoutesKeepUntrustedContentSandboxed(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	name := "unsafe.html"
+	if err := os.WriteFile(filepath.Join(s.apps[slug].Dir, name), []byte(`<script>parent.postMessage(document.cookie,"*")</script><form action="https://example.test"></form>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	appCookie := login(t, s, slug)
+	w := request(t, s, http.MethodGet, htmlURL(slug, []string{name}), nil, appCookie)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `sandbox`) || !strings.Contains(w.Body.String(), htmlContentURL(slug, []string{name})) {
+		t.Fatalf("html shell status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `parent.postMessage`) {
+		t.Error("trusted HTML shell embedded untrusted source")
+	}
+	w = request(t, s, http.MethodGet, htmlContentURL(slug, []string{name}), nil, appCookie)
+	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") || !strings.Contains(w.Header().Get("Content-Security-Policy"), "script-src 'none'") || w.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("html content status=%d type=%q csp=%q cache=%q", w.Code, w.Header().Get("Content-Type"), w.Header().Get("Content-Security-Policy"), w.Header().Get("Cache-Control"))
+	}
+	previewCookie := loginCookieForOperation(t, s, slug, "测试密码123", "preview")
+	w = request(t, s, http.MethodGet, previewURL(slug, []string{name}), nil, previewCookie)
+	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
+		t.Fatalf("html source preview status=%d type=%q", w.Code, w.Header().Get("Content-Type"))
+	}
+	w = request(t, s, http.MethodGet, "/_preview/"+url.PathEscape(slug)+"/"+url.PathEscape(name), nil)
+	if w.Code != http.StatusPermanentRedirect || w.Header().Get("Location") != previewURL(slug, []string{name}) {
+		t.Fatalf("legacy preview redirect status=%d location=%q", w.Code, w.Header().Get("Location"))
 	}
 }
 
