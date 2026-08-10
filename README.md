@@ -70,3 +70,6 @@ CGO_ENABLED=0 go build -trimpath -o datashelf .
 [`docs/RELEASE.md`](docs/RELEASE.md)。运行 `./scripts/build-release.sh` 会在
 `dist/` 生成 Linux amd64、macOS amd64、macOS arm64 和 Windows amd64 四个
 `datashelf-*` 产物及 `SHA256SUMS`。
+
+文件动态发现、`.env` 继承与密码迁移、HTML/分享渲染、静态资源缓存及
+前后端能力边界见 [`docs/PREVIEW-CONFIG-CONTRACT.md`](docs/PREVIEW-CONFIG-CONTRACT.md)。
