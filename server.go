@@ -27,6 +27,7 @@ type application struct {
 type server struct {
 	root     string
 	title    string
+	global   globalConfig
 	apps     map[string]*application
 	sessions *sessionManager
 	limiter  *loginLimiter
@@ -35,6 +36,10 @@ type server struct {
 }
 
 func newServer(root, title string, logger *log.Logger) (*server, error) {
+	return newServerWithConfig(root, title, globalConfig{DataDir: root, SiteTitle: title}, logger)
+}
+
+func newServerWithConfig(root, title string, global globalConfig, logger *log.Logger) (*server, error) {
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -55,7 +60,7 @@ func newServer(root, title string, logger *log.Logger) (*server, error) {
 		return nil, err
 	}
 	s := &server{
-		root: absoluteRoot, title: title, apps: make(map[string]*application),
+		root: absoluteRoot, title: title, global: global, apps: make(map[string]*application),
 		sessions: sessions, limiter: newLoginLimiter(), logger: logger, pages: pages,
 	}
 	if err := s.scanApps(); err != nil {
@@ -70,7 +75,10 @@ func (s *server) scanApps() error {
 		return fmt.Errorf("scan data directory: %w", err)
 	}
 	for _, entry := range entries {
-		if isPrivateName(entry.Name()) || entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+		if isPrivateName(entry.Name()) || entry.Name() == "a" || strings.HasPrefix(entry.Name(), "_") || entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+			if entry.Name() == "a" || strings.HasPrefix(entry.Name(), "_") {
+				s.logger.Printf("application %q is skipped because its name is reserved", entry.Name())
+			}
 			continue
 		}
 		path := filepath.Join(s.root, entry.Name())
@@ -100,6 +108,17 @@ func (s *server) refreshConfig(app *application) appConfig {
 	return cfg
 }
 
+func (s *server) effectiveConfig(app *application) appConfig {
+	cfg := s.refreshConfig(app)
+	if cfg.Protected || cfg.Locked || s.global.Password == "" {
+		return cfg
+	}
+	cfg.Password = s.global.Password
+	cfg.Protected = true
+	cfg.Version = s.global.Version
+	return cfg
+}
+
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	segments, err := decodePathSegments(r.URL.EscapedPath())
 	if err != nil {
@@ -114,11 +133,37 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.auth(w, r, segments[1])
 		return
 	}
+	if len(segments) >= 2 && segments[0] == "_preview" && segments[1] != "" {
+		s.preview(w, r, segments[1], segments[2:])
+		return
+	}
 	if len(segments) >= 2 && segments[0] == "a" && segments[1] != "" {
-		s.serveApp(w, r, segments[1], segments[2:])
+		s.redirectLegacyApp(w, r, segments[1], segments[2:])
+		return
+	}
+	if len(segments) >= 1 && segments[0] != "" && !strings.HasPrefix(segments[0], "_") {
+		s.serveApp(w, r, segments[0], segments[1:])
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func (s *server) redirectLegacyApp(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.NotFound(w, r)
+		return
+	}
+	if _, ok := s.apps[slug]; !ok {
+		http.NotFound(w, r)
+		return
+	}
+	for _, segment := range segments {
+		if isPrivateName(segment) {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	http.Redirect(w, r, appURL(slug, trimTrailingEmpty(segments), len(segments) == 0 || strings.HasSuffix(r.URL.EscapedPath(), "/")), http.StatusPermanentRedirect)
 }
 
 func (s *server) home(w http.ResponseWriter, r *http.Request) {
@@ -134,7 +179,7 @@ func (s *server) home(w http.ResponseWriter, r *http.Request) {
 	}
 	cards := make([]card, 0, len(s.apps))
 	for _, app := range s.apps {
-		cfg := s.refreshConfig(app)
+		cfg := s.effectiveConfig(app)
 		cards = append(cards, card{app.Slug, cfg.Name, cfg.Description, appURL(app.Slug, nil, true), cfg.Protected, cfg.Locked, app.ModTime})
 	}
 	if r.URL.Query().Get("sort") == "name" {
@@ -144,6 +189,7 @@ func (s *server) home(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	setPageSecurityHeaders(w)
 	if r.Method == http.MethodHead {
 		return
 	}
@@ -163,9 +209,9 @@ func (s *server) auth(w http.ResponseWriter, r *http.Request, slug string) {
 		http.NotFound(w, r)
 		return
 	}
-	cfg := s.refreshConfig(app)
+	cfg := s.effectiveConfig(app)
 	if !cfg.Protected {
-		http.Redirect(w, r, "/a/"+url.PathEscape(slug)+"/", http.StatusSeeOther)
+		http.Redirect(w, r, appURL(slug, nil, true), http.StatusSeeOther)
 		return
 	}
 	w.Header().Set("Cache-Control", "private, no-store")
@@ -197,7 +243,7 @@ func (s *server) auth(w http.ResponseWriter, r *http.Request, slug string) {
 		s.limiter.reset(slug, source)
 		http.SetCookie(w, &http.Cookie{
 			Name: s.sessions.cookieName(slug), Value: s.sessions.issue(slug, cfg.Version),
-			Path: "/a/" + url.PathEscape(slug), HttpOnly: true, SameSite: http.SameSiteLaxMode,
+			Path: "/" + url.PathEscape(slug) + "/", HttpOnly: true, SameSite: http.SameSiteLaxMode,
 			Secure: requestIsHTTPS(r),
 		})
 		http.Redirect(w, r, target, http.StatusSeeOther)
@@ -218,6 +264,7 @@ func (s *server) renderLogin(w http.ResponseWriter, r *http.Request, cfg appConf
 
 func (s *server) renderLoginStatus(w http.ResponseWriter, r *http.Request, cfg appConfig, slug, target, message string, status int) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setPageSecurityHeaders(w)
 	w.WriteHeader(status)
 	if r.Method == http.MethodHead {
 		return
@@ -236,19 +283,13 @@ func (s *server) serveApp(w http.ResponseWriter, r *http.Request, slug string, s
 		http.NotFound(w, r)
 		return
 	}
-	cfg := s.refreshConfig(app)
-	if cfg.Protected {
-		w.Header().Set("Cache-Control", "private, no-store")
-		if cfg.Locked {
-			http.Error(w, "管理员需修改本地配置", http.StatusLocked)
-			return
-		}
-		cookie, err := r.Cookie(s.sessions.cookieName(slug))
-		if err != nil || !s.sessions.valid(cookie.Value, slug, cfg.Version) {
-			target := r.URL.EscapedPath()
-			http.Redirect(w, r, "/_auth/"+url.PathEscape(slug)+"?return="+url.QueryEscape(target), http.StatusSeeOther)
-			return
-		}
+	if len(segments) == 0 && !strings.HasSuffix(r.URL.EscapedPath(), "/") {
+		http.Redirect(w, r, appURL(slug, nil, true), http.StatusPermanentRedirect)
+		return
+	}
+	cfg := s.effectiveConfig(app)
+	if !s.authorizeApp(w, r, slug, cfg) {
+		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -287,6 +328,24 @@ func (s *server) serveApp(w http.ResponseWriter, r *http.Request, slug string, s
 		return
 	}
 	s.serveFile(w, r, target, info, false)
+}
+
+func (s *server) authorizeApp(w http.ResponseWriter, r *http.Request, slug string, cfg appConfig) bool {
+	if !cfg.Protected {
+		return true
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	if cfg.Locked {
+		http.Error(w, "管理员需修改本地配置", http.StatusLocked)
+		return false
+	}
+	cookie, err := r.Cookie(s.sessions.cookieName(slug))
+	if err != nil || !s.sessions.valid(cookie.Value, slug, cfg.Version) {
+		target := r.URL.EscapedPath()
+		http.Redirect(w, r, "/_auth/"+url.PathEscape(slug)+"?return="+url.QueryEscape(target), http.StatusSeeOther)
+		return false
+	}
+	return true
 }
 
 func trimTrailingEmpty(segments []string) []string {
@@ -340,17 +399,21 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		}
 		childSegments := append(append([]string{}, segments...), entry.Name())
 		itemURL := appURL(app.Slug, childSegments, info.IsDir())
+		previewKind, openMode := previewFor(entry.Name(), info)
+		previewResourceURL := ""
+		if previewKind != "none" {
+			previewResourceURL = previewURL(app.Slug, childSegments)
+		} else {
+			previewKind = ""
+		}
 		kind, size := "文件", humanSize(info.Size())
-		previewKind, openMode, previewURL := "", "external", ""
 		if info.IsDir() {
-			kind, size, openMode = "目录", "", "navigate"
-		} else if previewKind = previewKindFor(entry.Name()); previewKind != "" {
-			openMode, previewURL = "modal", itemURL
+			kind, size = "目录", ""
 		}
 		items = append(items, item{
 			Name: entry.Name(), URL: itemURL, Kind: kind, Size: size,
 			Modified:    info.ModTime().Format("2006-01-02 15:04"),
-			PreviewKind: previewKind, OpenMode: openMode, PreviewURL: previewURL,
+			PreviewKind: previewKind, OpenMode: openMode, PreviewURL: previewResourceURL,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -372,6 +435,7 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		displayName = segments[len(segments)-1]
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setPageSecurityHeaders(w)
 	if r.Method == http.MethodHead {
 		return
 	}
@@ -403,6 +467,54 @@ func previewKindFor(name string) string {
 	}
 }
 
+func (s *server) preview(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
+	app, ok := s.apps[slug]
+	if !ok || len(segments) == 0 || r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.NotFound(w, r)
+		return
+	}
+	cfg := s.effectiveConfig(app)
+	if !s.authorizeApp(w, r, slug, cfg) {
+		return
+	}
+	for _, segment := range segments {
+		if segment == "" || isPrivateName(segment) {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	target, info, err := resolveSafePath(app.Dir, segments)
+	if err != nil || !info.Mode().IsRegular() {
+		http.NotFound(w, r)
+		return
+	}
+	kind, _ := previewFor(info.Name(), info)
+	if kind == "none" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'")
+	s.serveFile(w, r, target, info, false)
+}
+
+func previewFor(name string, info fs.FileInfo) (kind, openMode string) {
+	if info.IsDir() {
+		return "none", "navigate"
+	}
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".ico":
+		return "image", "modal"
+	case ".pdf":
+		return "pdf", "modal"
+	case ".txt", ".md", ".markdown", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".go", ".c", ".h", ".cs", ".ts", ".tsx", ".jsx", ".py", ".sh", ".sql", ".html", ".htm", ".js", ".mjs", ".css":
+		if info.Size() <= 2<<20 {
+			return "text", "modal"
+		}
+	}
+	return "none", "external"
+}
+
 func (s *server) serveFile(w http.ResponseWriter, r *http.Request, path string, info fs.FileInfo, rootIndex bool) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -427,6 +539,7 @@ func (s *server) serveFile(w http.ResponseWriter, r *http.Request, path string, 
 // embedded UI. Callers reach it only after authorization has completed.
 func (s *server) renderErrorPage(w http.ResponseWriter, r *http.Request, status int, heading, detail, backURL string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setPageSecurityHeaders(w)
 	w.WriteHeader(status)
 	if r.Method == http.MethodHead {
 		return
@@ -447,12 +560,8 @@ func contentDisposition(path string, rootIndex bool) (string, bool) {
 		return "text/html; charset=utf-8", false
 	}
 	switch ext {
-	case ".html", ".htm", ".txt", ".md", ".markdown", ".csv", ".log", ".xml", ".json", ".yaml", ".yml", ".toml", ".ini", ".go", ".c", ".h", ".cs", ".ts", ".tsx", ".jsx", ".py", ".sh", ".sql":
+	case ".html", ".htm", ".txt", ".md", ".markdown", ".csv", ".log", ".xml", ".json", ".yaml", ".yml", ".toml", ".ini", ".go", ".c", ".h", ".cs", ".ts", ".tsx", ".jsx", ".py", ".sh", ".sql", ".js", ".mjs", ".css":
 		return "text/plain; charset=utf-8", false
-	case ".js", ".mjs":
-		return "text/javascript; charset=utf-8", false
-	case ".css":
-		return "text/css; charset=utf-8", false
 	case ".svg":
 		return "application/octet-stream", true
 	case ".pdf":
@@ -469,7 +578,7 @@ func contentDisposition(path string, rootIndex bool) (string, bool) {
 }
 
 func appURL(slug string, segments []string, directory bool) string {
-	parts := []string{"", "a", url.PathEscape(slug)}
+	parts := []string{"", url.PathEscape(slug)}
 	for _, segment := range segments {
 		parts = append(parts, url.PathEscape(segment))
 	}
@@ -478,6 +587,18 @@ func appURL(slug string, segments []string, directory bool) string {
 		result += "/"
 	}
 	return result
+}
+
+func previewURL(slug string, segments []string) string {
+	parts := []string{"", "_preview", url.PathEscape(slug)}
+	for _, segment := range segments {
+		parts = append(parts, url.PathEscape(segment))
+	}
+	return strings.Join(parts, "/")
+}
+
+func setPageSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 }
 
 func humanSize(size int64) string {

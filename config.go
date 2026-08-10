@@ -38,6 +38,16 @@ type appConfig struct {
 	Version     [32]byte
 }
 
+// globalConfig is loaded once during startup. Its password is deliberately
+// kept separate from application configuration: it only protects applications
+// that do not have their own .env password.
+type globalConfig struct {
+	DataDir   string
+	SiteTitle string
+	Password  string
+	Version   [32]byte
+}
+
 type envDocument struct {
 	lines    []string
 	values   map[string]string
@@ -151,6 +161,136 @@ func configFromDocument(doc envDocument, fallbackName string, raw []byte) (appCo
 	}, nil
 }
 
+func loadGlobalConfig(path, defaultDir, defaultTitle string, required bool) (globalConfig, error) {
+	cfg := globalConfig{DataDir: defaultDir, SiteTitle: defaultTitle}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) && !required {
+		return cfg, nil
+	}
+	if err != nil {
+		return globalConfig{}, fmt.Errorf("inspect global configuration: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return globalConfig{}, errors.New("global configuration must be a regular file")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return globalConfig{}, fmt.Errorf("read global configuration: %w", err)
+	}
+	doc, err := parseGlobalEnv(raw)
+	if err != nil {
+		return globalConfig{}, err
+	}
+	cfg, err = globalConfigFromDocument(doc, defaultDir, defaultTitle)
+	if err != nil {
+		return globalConfig{}, err
+	}
+	if !filepath.IsAbs(cfg.DataDir) {
+		cfg.DataDir = filepath.Join(filepath.Dir(path), cfg.DataDir)
+	}
+	if !strings.HasPrefix(cfg.Password, "plain:") {
+		return cfg, nil
+	}
+	plain := strings.TrimPrefix(cfg.Password, "plain:")
+	if err := validatePlainPassword(plain); err != nil {
+		return globalConfig{}, err
+	}
+	hash, err := hashPassword(plain)
+	if err != nil {
+		return globalConfig{}, fmt.Errorf("hash global password: %w", err)
+	}
+	updated, err := replaceDocumentPassword(doc, "GLOBAL_PASSWORD", hash)
+	if err != nil {
+		return globalConfig{}, err
+	}
+	if err := replaceFileIfUnchanged(path, raw, updated, info.Mode().Perm()); err != nil {
+		return globalConfig{}, fmt.Errorf("migrate global password: %w", err)
+	}
+	reloaded, err := os.ReadFile(path)
+	if err != nil {
+		return globalConfig{}, fmt.Errorf("verify global configuration migration: %w", err)
+	}
+	reloadedDoc, err := parseGlobalEnv(reloaded)
+	if err != nil {
+		return globalConfig{}, fmt.Errorf("verify global configuration migration: %w", err)
+	}
+	cfg, err = globalConfigFromDocument(reloadedDoc, defaultDir, defaultTitle)
+	if err != nil || cfg.Password != hash {
+		return globalConfig{}, errors.New("global password migration verification failed")
+	}
+	if !filepath.IsAbs(cfg.DataDir) {
+		cfg.DataDir = filepath.Join(filepath.Dir(path), cfg.DataDir)
+	}
+	return cfg, nil
+}
+
+func parseGlobalEnv(raw []byte) (envDocument, error) {
+	doc := envDocument{values: make(map[string]string), keyCount: make(map[string]int)}
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 1024), 64*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		doc.lines = append(doc.lines, line)
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		key, valueText, ok := strings.Cut(trimmed, "=")
+		if !ok {
+			return doc, errors.New("invalid global configuration line")
+		}
+		key = strings.TrimSpace(key)
+		if key != "DATA_DIR" && key != "SITE_TITLE" && key != "GLOBAL_PASSWORD" {
+			return doc, fmt.Errorf("unknown global configuration key %q", key)
+		}
+		value, err := parseEnvValue(strings.TrimSpace(valueText))
+		if err != nil {
+			return doc, fmt.Errorf("invalid %s value: %w", key, err)
+		}
+		doc.keyCount[key]++
+		doc.values[key] = value
+	}
+	if err := scanner.Err(); err != nil {
+		return doc, err
+	}
+	return doc, nil
+}
+
+func globalConfigFromDocument(doc envDocument, defaultDir, defaultTitle string) (globalConfig, error) {
+	for _, key := range []string{"DATA_DIR", "SITE_TITLE", "GLOBAL_PASSWORD"} {
+		if doc.keyCount[key] > 1 {
+			return globalConfig{}, fmt.Errorf("%s must appear at most once", key)
+		}
+	}
+	cfg := globalConfig{DataDir: defaultDir, SiteTitle: defaultTitle}
+	if doc.keyCount["DATA_DIR"] == 1 {
+		if doc.values["DATA_DIR"] == "" {
+			return globalConfig{}, errors.New("DATA_DIR is empty")
+		}
+		cfg.DataDir = doc.values["DATA_DIR"]
+	}
+	if doc.keyCount["SITE_TITLE"] == 1 {
+		if doc.values["SITE_TITLE"] == "" {
+			return globalConfig{}, errors.New("SITE_TITLE is empty")
+		}
+		cfg.SiteTitle = doc.values["SITE_TITLE"]
+	}
+	if doc.keyCount["GLOBAL_PASSWORD"] == 1 {
+		cfg.Password = doc.values["GLOBAL_PASSWORD"]
+		if cfg.Password == "" {
+			return globalConfig{}, errors.New("GLOBAL_PASSWORD is empty")
+		}
+		if !strings.HasPrefix(cfg.Password, "plain:") && !strings.HasPrefix(cfg.Password, "hash:") {
+			return globalConfig{}, errors.New("unknown GLOBAL_PASSWORD format")
+		}
+		if _, err := decodePasswordHash(cfg.Password); err != nil && !strings.HasPrefix(cfg.Password, "plain:") {
+			return globalConfig{}, err
+		}
+		cfg.Version = sha256.Sum256([]byte(cfg.Password))
+	}
+	return cfg, nil
+}
+
 func parseEnv(raw []byte) (envDocument, error) {
 	doc := envDocument{values: make(map[string]string), keyCount: make(map[string]int)}
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
@@ -221,20 +361,24 @@ func validatePlainPassword(password string) error {
 }
 
 func replaceEnvPassword(doc envDocument, hash string) ([]byte, error) {
+	return replaceDocumentPassword(doc, "PASSWORD", hash)
+}
+
+func replaceDocumentPassword(doc envDocument, keyName, hash string) ([]byte, error) {
 	replaced := false
 	for i, line := range doc.lines {
 		trimmed := strings.TrimSpace(line)
 		key, _, ok := strings.Cut(trimmed, "=")
-		if ok && strings.TrimSpace(key) == "PASSWORD" {
+		if ok && strings.TrimSpace(key) == keyName {
 			if replaced {
-				return nil, errors.New("duplicate PASSWORD")
+				return nil, fmt.Errorf("duplicate %s", keyName)
 			}
-			doc.lines[i] = "PASSWORD='" + hash + "'"
+			doc.lines[i] = keyName + "='" + hash + "'"
 			replaced = true
 		}
 	}
 	if !replaced {
-		return nil, errors.New("PASSWORD is missing")
+		return nil, fmt.Errorf("%s is missing", keyName)
 	}
 	return []byte(strings.Join(doc.lines, "\n") + "\n"), nil
 }
