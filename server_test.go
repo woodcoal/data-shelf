@@ -537,6 +537,9 @@ func TestDirectoryTemplateUsesServerPreviewContract(t *testing.T) {
 		`datashelf.theme.v1`,
 		`zoom-controls`,
 		`preview-download`,
+		`modal-head-actions`,
+		`preview-share-status`,
+		`>预览源码</button>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("directory page missing %q", want)
@@ -584,7 +587,10 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 	for _, want := range []string{
 		`datashelf.accent.v1`, `datashelf.theme.v1`, `event.key==="Escape"`,
 		`pointerdown`, `closeAppearance(true)`, `dialog.showModal()`,
-		`document.contains(returnTrigger)`, `kind!=="image"`,
+		`document.contains(returnTrigger)`, `canNavigate=trigger.dataset.canNavigateImages==="true"`,
+		`imageCapability(activeTrigger,"previous")`, `imageCapability(activeTrigger,"next")`,
+		`navigation.hidden=!canNavigate`, `updateShareStatus`,
+		`openLink.textContent=trigger.dataset.openKind==="html-render"?"受控视图":"新窗口打开"`,
 		`node.textContent=message`, `prefers-reduced-motion`,
 	} {
 		if !strings.Contains(rendered, want) {
@@ -594,6 +600,9 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 	if strings.Contains(rendered, "innerHTML") {
 		t.Error("page scripts must not render untrusted content with innerHTML")
 	}
+	if strings.Contains(rendered, `entry-link[data-preview-kind="image"]`) || strings.Contains(rendered, "function imageIndex()") {
+		t.Error("image navigation must consume server-provided neighbor capabilities, not infer a DOM image sequence")
+	}
 }
 
 func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) {
@@ -601,18 +610,21 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 	var body strings.Builder
 	err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{
 		"Items": []directoryItem{{
-			Name: "guide.md", URL: "/guide.md", PreviewKind: "markdown", OpenMode: "modal",
-			PreviewURL: "/_preview/资料/guide.md", OpenURL: "/_preview/资料/guide.md", DownloadURL: "/_download/资料/guide.md",
+			Name: "guide.html", URL: "/guide.html", PreviewKind: "text", OpenKind: "html-render", OpenMode: "modal",
+			PreviewURL: "/_preview/docs/guide.html", OpenURL: "/docs/_html/guide.html", DownloadURL: "/docs/_download/guide.html",
+			Share: shareStatus{State: "available", RequiresPassword: true, ExpiresAt: "2026-08-11T00:00:00Z", CanDownload: false},
 		}},
 	})
 	if err != nil {
 		t.Fatalf("render preview actions: %v", err)
 	}
 	for _, want := range []string{
-		`data-preview-kind="markdown"`,
-		`data-open-url="/_preview/`,
-		`data-download-url="/_download/`,
-		`kind==="markdown"`,
+		`data-preview-kind="text"`, `data-open-kind="html-render"`,
+		`data-preview-url="/_preview/`, `data-open-url="/docs/_html/`,
+		`data-download-url="/docs/_download/`,
+		`HTML 源码预览`, `>预览源码</button>`,
+		`openLink.textContent=trigger.dataset.openKind==="html-render"?"受控视图":"新窗口打开"`,
+		`data-share-state="available"`, `preview-share-status`, `已配置分享`,
 		`allow-popups allow-popups-to-escape-sandbox`,
 	} {
 		if !strings.Contains(body.String(), want) {
