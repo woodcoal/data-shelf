@@ -362,6 +362,43 @@ func TestProtectedRequestsRevealNoFileMetadataBeforeAuth(t *testing.T) {
 	}
 }
 
+func TestPreAuthDirectoryMetadataDoesNotLeakFromHomeOrLogin(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	appDir := s.apps[slug].Dir
+	if err := os.Mkdir(filepath.Join(appDir, "深层目录"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, ".env"), []byte("title='机密应用标题'\ndescription='机密应用说明'\npassword='"+protectedHash(t)+"'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "深层目录", ".env"), []byte("title='机密深层标题'\ndescription='机密深层说明'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	login := appResourceURL(slug, "_auth", nil)
+	requests := []struct {
+		name   string
+		target string
+	}{
+		{name: "home", target: "/"},
+		{name: "application root", target: login + "?return=" + url.QueryEscape(appURL(slug, nil, true))},
+		{name: "nested directory", target: login + "?return=" + url.QueryEscape(appURL(slug, []string{"深层目录"}, true))},
+	}
+	for _, tc := range requests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := request(t, s, http.MethodGet, tc.target, nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			for _, secret := range []string{"机密应用标题", "机密应用说明", "机密深层标题", "机密深层说明"} {
+				if strings.Contains(w.Body.String(), secret) {
+					t.Fatalf("unauthenticated response leaked directory metadata %q", secret)
+				}
+			}
+		})
+	}
+}
+
 func TestLoginDeepLinkRangeAndSessionInvalidation(t *testing.T) {
 	s, slug := makeTestServer(t, true)
 	cookie := login(t, s, slug)
