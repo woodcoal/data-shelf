@@ -254,7 +254,13 @@ func (s *server) home(w http.ResponseWriter, r *http.Request) {
 	cards := make([]card, 0, len(s.apps))
 	for _, app := range s.apps {
 		policy := s.resolveDirectoryPolicy(app, nil)
-		cards = append(cards, card{app.Slug, policy.Title, policy.Description, appURL(app.Slug, nil, true), policy.Protected, policy.Locked, app.ModTime})
+		name, description := policy.Title, policy.Description
+		if policy.Protected || policy.Locked {
+			// A card is rendered before authentication. Do not disclose private
+			// directory metadata through the application listing.
+			name, description = "受保护资料", ""
+		}
+		cards = append(cards, card{app.Slug, name, description, appURL(app.Slug, nil, true), policy.Protected, policy.Locked, app.ModTime})
 	}
 	if r.URL.Query().Get("sort") == "name" {
 		sort.Slice(cards, func(i, j int) bool { return strings.ToLower(cards[i].Name) < strings.ToLower(cards[j].Name) })
@@ -406,7 +412,9 @@ func (s *server) renderLoginStatus(w http.ResponseWriter, r *http.Request, cfg a
 		return
 	}
 	if err := s.pages.ExecuteTemplate(w, "login", map[string]any{
-		"PageTitle": cfg.Name + " - 访问验证", "Name": cfg.Name, "Slug": slug,
+		// Authentication is deliberately independent of the requested policy's
+		// title and description: this response is available without a session.
+		"PageTitle": "访问验证", "Name": "受保护资料", "Slug": slug,
 		"Return": target, "Message": message, "Locked": cfg.Locked,
 	}); err != nil {
 		s.logger.Printf("render login: %v", err)
