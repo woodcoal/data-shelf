@@ -394,6 +394,17 @@ func TestEmbeddedDirectoryTemplateEscapesNamesAndShowsMetadata(t *testing.T) {
 	}
 }
 
+func TestDirectoryTemplateDoesNotForceMinimumViewportWidth(t *testing.T) {
+	s, slug := makeTestServer(t, false)
+	w := request(t, s, http.MethodGet, appURL(slug, nil, true), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("directory status=%d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "min-width:320px") {
+		t.Error("directory template forces a 320px minimum body width")
+	}
+}
+
 func TestDirectoryTemplateUsesServerPreviewContract(t *testing.T) {
 	s, slug := makeTestServer(t, false)
 	for name := range map[string]string{
