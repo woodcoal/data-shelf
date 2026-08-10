@@ -82,7 +82,7 @@ func loadAppConfig(appDir, fallbackName string) (appConfig, error) {
 		return lockedConfigWithMetadata(doc, fallbackName), err
 	}
 
-	if strings.HasPrefix(cfg.Password, "plain:") {
+	if !strings.HasPrefix(cfg.Password, "hash:") {
 		plain := strings.TrimPrefix(cfg.Password, "plain:")
 		if err := validatePlainPassword(plain); err != nil {
 			return lockedConfigWithMetadata(doc, fallbackName), err
@@ -143,7 +143,7 @@ func configFromDocument(doc envDocument, fallbackName string, raw []byte) (appCo
 	if password == "" {
 		return appConfig{}, errors.New("PASSWORD is empty")
 	}
-	if !strings.HasPrefix(password, "plain:") && !strings.HasPrefix(password, "hash:") {
+	if !strings.HasPrefix(password, "hash:") && !strings.HasPrefix(password, "plain:") && strings.Contains(password, ":") {
 		return appConfig{}, errors.New("unknown PASSWORD format")
 	}
 	name := fallbackName
@@ -191,7 +191,7 @@ func loadRootConfig(root, defaultTitle string) (globalConfig, error) {
 	if err != nil {
 		return globalConfig{}, err
 	}
-	if !strings.HasPrefix(cfg.Password, "plain:") {
+	if cfg.Password == "" || strings.HasPrefix(cfg.Password, "hash:") {
 		return cfg, nil
 	}
 	plain := strings.TrimPrefix(cfg.Password, "plain:")
@@ -255,10 +255,10 @@ func rootConfigFromDocument(doc envDocument, defaultTitle string) (globalConfig,
 		if cfg.Password == "" {
 			return globalConfig{}, errors.New("PASSWORD is empty")
 		}
-		if !strings.HasPrefix(cfg.Password, "plain:") && !strings.HasPrefix(cfg.Password, "hash:") {
+		if !strings.HasPrefix(cfg.Password, "hash:") && !strings.HasPrefix(cfg.Password, "plain:") && strings.Contains(cfg.Password, ":") {
 			return globalConfig{}, errors.New("unknown PASSWORD format")
 		}
-		if _, err := decodePasswordHash(cfg.Password); err != nil && !strings.HasPrefix(cfg.Password, "plain:") {
+		if _, err := decodePasswordHash(cfg.Password); err != nil && strings.HasPrefix(cfg.Password, "hash:") {
 			return globalConfig{}, err
 		}
 		cfg.Version = sha256.Sum256([]byte(cfg.Password))
@@ -306,7 +306,7 @@ func parseEnv(raw []byte) (envDocument, error) {
 
 func isSupportedEnvKey(key string) bool {
 	return key == "NAME" || key == "DESCRIPTION" || key == "PASSWORD" ||
-		key == "title" || key == "description" || key == "password" ||
+		key == "title" || key == "description" || key == "password" || key == "html_scripts" ||
 		key == "SHARE_ENABLED" || parseShareKey(key) != (shareKey{})
 }
 

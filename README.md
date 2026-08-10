@@ -26,7 +26,8 @@ go run . -dir /path/to/data
 ```dotenv
 title='团队资料架'
 description='团队共享的只读资料'
-password='plain:首次设置的全局密码'
+password='首次设置的全局密码'
+html_scripts='allow' # 可选；allow 为默认值，deny 会禁止 HTML 脚本
 ```
 
 数据根优先级为显式 `-dir` > 启动目录；标题优先级为 `-title` > 根 `.env` 的 `title` > `DataShelf`。标题与说明只作用于其所在目录；密码按最近有效祖先继承，子目录有效密码创建新的授权边界。空密码、重复/未知字段、大小写近似、链接、超限或读取错误都会锁定对应子树，绝不回退为公开。根与应用根仍提供一次 `NAME`/`DESCRIPTION`/`PASSWORD` 的迁移兼容；嵌套目录只接受小写字段。
@@ -38,10 +39,10 @@ password='plain:首次设置的全局密码'
 ```dotenv
 title='项目资料'
 description='只读资料与演示'
-password='plain:首次设置的密码'
+password='首次设置的密码'
 ```
 
-合法的根 `plain:` 密码会迁移为版本化 Argon2id 哈希。所有 `.env`、`app.json`、隐藏文件、链接和非常规文件都会统一返回 404；配置变化会在下一请求使受影响的授权失效。
+无前缀的首次密码会原子迁移为版本化 Argon2id `hash:`；`plain:` 只作为一周期兼容输入。`html_scripts` 与密码一样向下继承，子目录的显式值覆盖父目录。所有 `.env`、`app.json`、隐藏文件、链接和非常规文件都会统一返回 404；配置变化会在下一请求使受影响的授权失效。
 
 `/a/<应用名>/...` 是旧版地址，只对 GET/HEAD 安全地 308 重定向到规范地址；升级后旧 Cookie 不迁移，受保护应用需要重新登录。`a` 和 `_` 开头的一级目录为保留命名空间，不会作为应用公开。
 
@@ -53,7 +54,7 @@ password='plain:首次设置的密码'
 
 受控资源位于应用前缀内：`/<应用>/_preview/<路径>`、`/<应用>/_download/<路径>`、`/<应用>/_html/<路径>` 和 `/<应用>/_html-content/<路径>`。一次登录会为应用页及受控资源签发同一应用专用、`HttpOnly` 的路径限定会话 Cookie；不会使用站点根路径 Cookie，也不能授权其他应用。旧版顶级 `/_preview/<应用>/` 和 `/_download/<应用>/` 仅作不读取文件的 308 兼容重定向。
 
-`.html`/`.htm` 点击文件名时进入受控 HTML 外壳；外壳中的原始内容只在不含 `allow-scripts`、`allow-same-origin` 等权限的 iframe 中运行，响应同时设置严格 CSP sandbox。预览操作始终读取固定 `text/plain` 源码，直接文件路由不会裸露同源可执行 HTML。
+目录即使含有 `index.html` 也始终显示目录列表；只有点击 `.html`/`.htm` 文件名才进入受控 HTML 外壳。默认 `html_scripts='allow'` 时，原始内容可在隔离 iframe 中执行脚本，但绝不授予 `allow-same-origin`；设置为 `deny` 会完全禁用脚本。预览操作始终读取固定 `text/plain` 源码，直接文件路由不会裸露同源可执行 HTML。
 
 `.md`/`.markdown` 仅在普通文件且不超过 1 MiB 时作为 Markdown 候选。服务端使用 Goldmark 渲染，禁用原始 HTML 和图片嵌入，移除脚本协议与危险链接；同应用相对链接会重写为受控规范 URL，外部 HTTP(S) 链接使用 `noopener noreferrer`。Markdown 预览是带严格 CSP 的完整沙箱文档，受保护响应保持 `private, no-store`。SVG、Office、压缩包和未知二进制仅可下载。
 
@@ -70,6 +71,8 @@ CGO_ENABLED=0 go build -trimpath -o datashelf .
 [`docs/RELEASE.md`](docs/RELEASE.md)。运行 `./scripts/build-release.sh` 会在
 `dist/` 生成 Linux amd64、macOS amd64、macOS arm64 和 Windows amd64 四个
 `datashelf-*` 产物及 `SHA256SUMS`。
+
+每次请求都会重新发现第一层应用目录；根目录不可读取时返回 503，而不会回退到陈旧列表。页面使用构建内嵌、内容指纹化的 `/_assets/` CSS/JS：指纹资源以一年 `immutable` 缓存和强 ETag 输出，二进制更新会生成新 URL；页面与受保护内容保持不可存储。
 
 文件动态发现、`.env` 继承与密码迁移、HTML/分享渲染、静态资源缓存及
 前后端能力边界见 [`docs/PREVIEW-CONFIG-CONTRACT.md`](docs/PREVIEW-CONFIG-CONTRACT.md)。

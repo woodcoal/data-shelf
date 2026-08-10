@@ -214,15 +214,15 @@ func TestGlobalPasswordOnlyProtectsPublicApps(t *testing.T) {
 	}
 }
 
-func TestInvalidPrivateConfigCannotFallBackToGlobalPassword(t *testing.T) {
+func TestDirectPrivatePasswordDoesNotFallBackToGlobalPassword(t *testing.T) {
 	s, slug := makeTestServer(t, false)
 	s.global = globalConfig{Password: protectedHash(t)}
 	if err := os.WriteFile(filepath.Join(s.apps[slug].Dir, ".env"), []byte("PASSWORD='invalid'\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	w := request(t, s, http.MethodGet, appURL(slug, []string{"secret.txt"}, false), nil)
-	if w.Code != http.StatusLocked || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
-		t.Fatalf("invalid private config fell back to global password: status=%d cache=%q", w.Code, w.Header().Get("Cache-Control"))
+	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("direct private password did not establish its own boundary: status=%d cache=%q", w.Code, w.Header().Get("Cache-Control"))
 	}
 }
 
@@ -362,7 +362,7 @@ func TestProtectedRequestsRevealNoFileMetadataBeforeAuth(t *testing.T) {
 	}
 }
 
-func TestPreAuthDirectoryMetadataDoesNotLeakFromHomeOrLogin(t *testing.T) {
+func TestDirectoryMetadataIsPublicButSecretsNeverReachLogin(t *testing.T) {
 	s, slug := makeTestServer(t, true)
 	appDir := s.apps[slug].Dir
 	if err := os.Mkdir(filepath.Join(appDir, "深层目录"), 0o755); err != nil {
@@ -390,9 +390,12 @@ func TestPreAuthDirectoryMetadataDoesNotLeakFromHomeOrLogin(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 			}
-			for _, secret := range []string{"机密应用标题", "机密应用说明", "机密深层标题", "机密深层说明"} {
+			if tc.name == "home" && (!strings.Contains(w.Body.String(), "机密应用标题") || !strings.Contains(w.Body.String(), "机密应用说明")) {
+				t.Fatal("home did not publish the allowed directory title and description")
+			}
+			for _, secret := range []string{protectedHash(t), "password=", "hash:v1:"} {
 				if strings.Contains(w.Body.String(), secret) {
-					t.Fatalf("unauthenticated response leaked directory metadata %q", secret)
+					t.Fatalf("unauthenticated response leaked a credential %q", secret)
 				}
 			}
 		})
@@ -486,8 +489,8 @@ func TestHTMLFilesUseControlledRoutesInsteadOfNakedSameOriginRendering(t *testin
 		t.Fatal(err)
 	}
 	w := request(t, s, http.MethodGet, appURL(slug, nil, true), nil)
-	if w.Code != http.StatusPermanentRedirect || w.Header().Get("Location") != htmlURL(slug, []string{"index.html"}) {
-		t.Fatalf("root index status=%d location=%q", w.Code, w.Header().Get("Location"))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "index.html") {
+		t.Fatalf("root directory did not retain browse semantics: status=%d body=%q", w.Code, w.Body.String())
 	}
 	w = request(t, s, http.MethodGet, appURL(slug, []string{"nested", "index.html"}, false), nil)
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != appResourceURL(slug, "_html", []string{"nested", "index.html"}) {
@@ -597,6 +600,7 @@ func TestPagesUseExploreTopbarAndSafeDirectoryContext(t *testing.T) {
 		t.Fatalf("render directory context: %v", err)
 	}
 	rendered := body.String()
+	pageAndAssets := rendered + string(appCSS) + string(appJS)
 	for _, want := range []string{
 		`class="topbar"`, `class="brand" href="/"`, `class="appearance-toggle"`,
 		`aria-label="显示偏好"`, `width:40px`, `height:40px`,
@@ -605,7 +609,7 @@ func TestPagesUseExploreTopbarAndSafeDirectoryContext(t *testing.T) {
 		`data-current-year`, `https://github.com/woodcoal/data-shelf`,
 		`<h1>&lt;当前目录&gt;</h1>`, `说明 &lt;不得作为 HTML&gt;`,
 	} {
-		if !strings.Contains(rendered, want) {
+		if !strings.Contains(pageAndAssets, want) {
 			t.Errorf("directory page missing %q", want)
 		}
 	}
@@ -620,7 +624,7 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 	if err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{}); err != nil {
 		t.Fatalf("render directory scripts: %v", err)
 	}
-	rendered := body.String()
+	rendered := body.String() + string(appCSS) + string(appJS)
 	for _, want := range []string{
 		`datashelf.accent.v1`, `datashelf.theme.v1`, `event.key==="Escape"`,
 		`pointerdown`, `closeAppearance(true)`, `dialog.showModal()`,
@@ -662,6 +666,7 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 	if err != nil {
 		t.Fatalf("render preview actions: %v", err)
 	}
+	rendered := body.String() + string(appCSS) + string(appJS)
 	for _, want := range []string{
 		`data-preview-kind="text"`, `data-open-kind="html-render"`,
 		`data-preview-url="/_preview/`, `data-open-url="/docs/_html/`,
@@ -671,11 +676,11 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 		`data-share-state="available"`, `preview-share-status`, `已配置分享`,
 		`allow-popups allow-popups-to-escape-sandbox`,
 	} {
-		if !strings.Contains(body.String(), want) {
+		if !strings.Contains(rendered, want) {
 			t.Errorf("preview action contract missing %q", want)
 		}
 	}
-	if strings.Contains(body.String(), "innerHTML") {
+	if strings.Contains(rendered, "innerHTML") {
 		t.Error("template must not inject preview content with innerHTML")
 	}
 	footerAt, actionsAt := strings.Index(body.String(), `id="preview-foot"`), strings.Index(body.String(), `id="preview-actions"`)
@@ -766,7 +771,7 @@ func TestHTMLControlledRoutesKeepUntrustedContentSandboxed(t *testing.T) {
 		t.Error("trusted HTML shell embedded untrusted source")
 	}
 	w = request(t, s, http.MethodGet, htmlContentURL(slug, []string{name}), nil, appCookie)
-	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") || !strings.Contains(w.Header().Get("Content-Security-Policy"), "script-src 'none'") || w.Header().Get("Cache-Control") != "private, no-store" {
+	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") || !strings.Contains(w.Header().Get("Content-Security-Policy"), "sandbox allow-scripts") || strings.Contains(w.Header().Get("Content-Security-Policy"), "allow-same-origin") || w.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("html content status=%d type=%q csp=%q cache=%q", w.Code, w.Header().Get("Content-Type"), w.Header().Get("Content-Security-Policy"), w.Header().Get("Cache-Control"))
 	}
 	previewCookie := loginCookieForOperation(t, s, slug, "测试密码123", "preview")
