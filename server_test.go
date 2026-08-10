@@ -428,11 +428,17 @@ func TestDirectoryTemplateUsesServerPreviewContract(t *testing.T) {
 		`data-preview-kind="pdf"`,
 		`data-preview-kind="text"`,
 		`data-preview-url=`,
+		`data-open-url=`,
+		`data-download-url=`,
+		`data-can-zoom="true"`,
 		`target="_blank"`,
-		`rel="noopener"`,
+		`rel="noopener noreferrer"`,
 		`资料架首页`,
 		`aria-modal="true"`,
-		`datashelf-ui-preferences-v1`,
+		`aria-haspopup="menu"`,
+		`datashelf.theme.v1`,
+		`zoom-controls`,
+		`preview-download`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("directory page missing %q", want)
@@ -440,6 +446,38 @@ func TestDirectoryTemplateUsesServerPreviewContract(t *testing.T) {
 	}
 	if strings.Contains(body, `data-preview-kind="svg"`) || strings.Contains(body, `data-preview-kind="zip"`) {
 		t.Error("unsafe file type was made previewable")
+	}
+}
+
+func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) {
+	s, _ := makeTestServer(t, false)
+	type item struct {
+		Name, URL, PreviewURL, PreviewKind, OpenMode, OpenURL, DownloadURL, Kind, Size, Modified string
+		CanZoom                                                                                  bool
+	}
+	var body strings.Builder
+	err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{
+		"Items": []item{{
+			Name: "guide.md", URL: "/guide.md", PreviewKind: "markdown", OpenMode: "modal",
+			PreviewURL: "/_preview/资料/guide.md", OpenURL: "/_preview/资料/guide.md", DownloadURL: "/_download/资料/guide.md",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("render preview actions: %v", err)
+	}
+	for _, want := range []string{
+		`data-preview-kind="markdown"`,
+		`data-open-url="/_preview/`,
+		`data-download-url="/_download/`,
+		`kind==="markdown"`,
+		`allow-popups allow-popups-to-escape-sandbox`,
+	} {
+		if !strings.Contains(body.String(), want) {
+			t.Errorf("preview action contract missing %q", want)
+		}
+	}
+	if strings.Contains(body.String(), "innerHTML") {
+		t.Error("template must not inject preview content with innerHTML")
 	}
 }
 
