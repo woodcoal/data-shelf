@@ -49,9 +49,11 @@ PASSWORD='plain:首次设置的密码'
 
 首页、目录列表、密码页和空状态模板位于 `web/pages.tmpl`，在构建时通过 `go:embed` 编译进二进制，因此运行时无需部署静态资源。模板接收的文件名、应用名称和描述均由 Go 的 `html/template` 自动转义；路径仍由服务端按 URL 路径段编码和校验。
 
-后端为模板提供受控预览契约：`PreviewKind` 为 `none`、`image`、`pdf`、`text` 或 `markdown`，并提供服务端生成的 `PreviewURL`、`OpenURL`、`DownloadURL` 和图片专用的 `CanZoom`。`/_preview` 与 `/_download` 均先完成应用认证，再解析文件、MIME、Range 或条件请求；下载始终使用安全的 `Content-Disposition: attachment`。
+后端为模板提供受控预览契约：`PreviewKind` 为 `none`、`image`、`pdf`、`text` 或 `markdown`，`OpenKind` 为 `directory`、`file`、`html-render` 或 `download`。URL、缩放、图片前后邻项和分享可用状态都由服务端生成；客户端不得按扩展名、DOM 或路径自行推断。分享状态只包含可用性、是否需要密码、过期时间和下载许可，绝不包含令牌、密码、哈希、管理 ID 或文件路径。
 
-一次登录会为应用页、`/_preview/<应用>/` 与 `/_download/<应用>/` 分别签发同一应用专用、`HttpOnly` 的路径限定会话 Cookie；不会使用站点根路径 Cookie，也不能授权其他应用。
+受控资源位于应用前缀内：`/<应用>/_preview/<路径>`、`/<应用>/_download/<路径>`、`/<应用>/_html/<路径>` 和 `/<应用>/_html-content/<路径>`。一次登录会为应用页及受控资源签发同一应用专用、`HttpOnly` 的路径限定会话 Cookie；不会使用站点根路径 Cookie，也不能授权其他应用。旧版顶级 `/_preview/<应用>/` 和 `/_download/<应用>/` 仅作不读取文件的 308 兼容重定向。
+
+`.html`/`.htm` 点击文件名时进入受控 HTML 外壳；外壳中的原始内容只在不含 `allow-scripts`、`allow-same-origin` 等权限的 iframe 中运行，响应同时设置严格 CSP sandbox。预览操作始终读取固定 `text/plain` 源码，直接文件路由不会裸露同源可执行 HTML。
 
 `.md`/`.markdown` 仅在普通文件且不超过 1 MiB 时作为 Markdown 候选。服务端使用 Goldmark 渲染，禁用原始 HTML 和图片嵌入，移除脚本协议与危险链接；同应用相对链接会重写为受控规范 URL，外部 HTTP(S) 链接使用 `noopener noreferrer`。Markdown 预览是带严格 CSP 的完整沙箱文档，受保护响应保持 `private, no-store`。SVG、Office、压缩包和未知二进制仅可下载。
 
