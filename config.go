@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
@@ -287,7 +288,7 @@ func parseEnv(raw []byte) (envDocument, error) {
 			return doc, errors.New("invalid .env line")
 		}
 		key = strings.TrimSpace(key)
-		if !knownEnvKey(key) {
+		if !isSupportedEnvKey(key) {
 			return doc, fmt.Errorf("unknown .env key %q", key)
 		}
 		value, err := parseEnvValue(strings.TrimSpace(valueText))
@@ -303,33 +304,119 @@ func parseEnv(raw []byte) (envDocument, error) {
 	return doc, nil
 }
 
-// knownEnvKey is deliberately case-sensitive.  The upper-case names are kept
-// only for the one-release root/application migration path; nested directory
-// configuration must use the lower-case contract.
-func knownEnvKey(key string) bool {
-	if key == "NAME" || key == "DESCRIPTION" || key == "PASSWORD" || key == "title" || key == "description" || key == "password" {
-		return true
+func isSupportedEnvKey(key string) bool {
+	return key == "NAME" || key == "DESCRIPTION" || key == "PASSWORD" ||
+		key == "title" || key == "description" || key == "password" ||
+		key == "SHARE_ENABLED" || parseShareKey(key) != (shareKey{})
+}
+
+type shareKey struct {
+	id    string
+	field string
+}
+
+func parseShareKey(key string) shareKey {
+	if !strings.HasPrefix(key, "SHARE_") || key == "SHARE_ENABLED" {
+		return shareKey{}
 	}
-	if !strings.HasPrefix(key, "SHARE_") {
+	for _, field := range []string{"ENABLED", "SCOPE", "PATH", "TOKEN", "EXPIRES_AT", "PASSWORD", "ALLOW_DOWNLOAD"} {
+		suffix := "_" + field
+		if !strings.HasSuffix(key, suffix) {
+			continue
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(key, "SHARE_"), suffix)
+		if validShareID(id) {
+			return shareKey{id: id, field: field}
+		}
+	}
+	return shareKey{}
+}
+
+func validShareID(value string) bool {
+	if len(value) == 0 || len(value) > 32 || strings.HasPrefix(value, "_") || strings.HasSuffix(value, "_") {
 		return false
 	}
-	rest := strings.TrimPrefix(key, "SHARE_")
-	parts := strings.Split(rest, "_")
-	if len(parts) < 2 || parts[0] == "" {
-		return false
-	}
-	for _, r := range parts[0] {
-		if !(r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+	for _, char := range value {
+		if char != '_' && (char < 'A' || char > 'Z') && (char < '0' || char > '9') {
 			return false
 		}
 	}
-	field := strings.Join(parts[1:], "_")
-	switch field {
-	case "ENABLED", "SCOPE", "PATH", "TOKEN", "EXPIRES_AT", "PASSWORD", "ALLOW_DOWNLOAD":
-		return true
-	default:
-		return false
+	return true
+}
+
+// loadShareStatuses is intentionally status-only. It validates the narrow,
+// direct-parent SHARE_* model before publishing non-secret UI state. Any I/O,
+// syntax or policy error returns the closed default; credentials and target
+// configuration never escape this function.
+func loadShareStatuses(dir string, now time.Time) map[string]shareStatus {
+	closed := make(map[string]shareStatus)
+	path := filepath.Join(dir, ".env")
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return closed
 	}
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return closed
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return closed
+	}
+	doc, err := parseEnv(raw)
+	if err != nil || doc.keyCount["SHARE_ENABLED"] > 1 || doc.values["SHARE_ENABLED"] != "true" {
+		return closed
+	}
+	type candidate struct {
+		values map[string]string
+		counts map[string]int
+	}
+	groups := make(map[string]*candidate)
+	for key, value := range doc.values {
+		parsed := parseShareKey(key)
+		if parsed == (shareKey{}) {
+			continue
+		}
+		group := groups[parsed.id]
+		if group == nil {
+			group = &candidate{values: make(map[string]string), counts: make(map[string]int)}
+			groups[parsed.id] = group
+		}
+		group.values[parsed.field] = value
+		group.counts[parsed.field] = doc.keyCount[key]
+	}
+	for _, group := range groups {
+		for _, field := range []string{"ENABLED", "SCOPE", "PATH", "TOKEN", "EXPIRES_AT", "PASSWORD", "ALLOW_DOWNLOAD"} {
+			if group.counts[field] != 1 {
+				return closed
+			}
+		}
+		if group.values["ENABLED"] != "true" || group.values["SCOPE"] != "file" || !validShareTargetName(group.values["PATH"]) {
+			return closed
+		}
+		token, err := base64.RawURLEncoding.DecodeString(group.values["TOKEN"])
+		if err != nil || len(token) != 32 || base64.RawURLEncoding.EncodeToString(token) != group.values["TOKEN"] {
+			return closed
+		}
+		if _, err := decodePasswordHash(group.values["PASSWORD"]); err != nil {
+			return closed
+		}
+		expiresAt, err := time.Parse(time.RFC3339, group.values["EXPIRES_AT"])
+		if err != nil || expiresAt.After(now.Add(30*24*time.Hour)) || group.values["ALLOW_DOWNLOAD"] != "true" && group.values["ALLOW_DOWNLOAD"] != "false" {
+			return closed
+		}
+		state := "available"
+		if !expiresAt.After(now) {
+			state = "expired"
+		}
+		closed[group.values["PATH"]] = shareStatus{
+			State: "" + state, RequiresPassword: true, ExpiresAt: expiresAt.Format(time.RFC3339), CanDownload: group.values["ALLOW_DOWNLOAD"] == "true",
+		}
+	}
+	return closed
+}
+
+func validShareTargetName(name string) bool {
+	return name != "" && name != "." && name != ".." && !isPrivateName(name) && !strings.ContainsAny(name, "/\\\x00")
 }
 
 func parseEnvValue(text string) (string, error) {

@@ -36,6 +36,31 @@ type server struct {
 	pages    *template.Template
 }
 
+// directoryItem is the complete server-authored contract for the embedded
+// browser. It carries only generated URLs and never local paths or share
+// credentials.
+type directoryItem struct {
+	Name, URL, Kind, Size, Modified                      string
+	PreviewKind, OpenKind, OpenMode, PreviewURL, OpenURL string
+	DownloadURL                                          string
+	CanZoom, CanNavigateImages                           bool
+	PreviousImage, NextImage                             *imageNavigation
+	Share                                                shareStatus
+}
+
+type imageNavigation struct {
+	Name, PreviewURL, OpenURL, DownloadURL string
+	CanZoom                                bool
+}
+
+// shareStatus intentionally contains no token, password, path, or share ID.
+type shareStatus struct {
+	State            string
+	RequiresPassword bool
+	ExpiresAt        string
+	CanDownload      bool
+}
+
 func newServer(root, title string, logger *log.Logger) (*server, error) {
 	return newServerWithConfig(root, title, globalConfig{SiteTitle: title}, logger)
 }
@@ -436,7 +461,7 @@ func (s *server) serveApp(w http.ResponseWriter, r *http.Request, slug string, s
 			indexPath, indexInfo, indexErr := resolveSafePath(app.Dir, []string{"index.html"})
 			if indexErr == nil && indexInfo.Mode().IsRegular() {
 				_ = indexPath
-				http.Redirect(w, r, appResourceURL(slug, "_html", []string{"index.html"}), http.StatusSeeOther)
+				http.Redirect(w, r, appResourceURL(slug, "_html", []string{"index.html"}), http.StatusPermanentRedirect)
 				return
 			}
 		}
@@ -534,12 +559,8 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		s.renderErrorPage(w, r, http.StatusForbidden, "无法访问此目录", "当前资料无法读取。请联系资料管理员确认目录权限。", appURL(app.Slug, trimTrailingEmpty(segments), true))
 		return
 	}
-	type item struct {
-		Name, URL, Kind, Size, Modified                         string
-		PreviewKind, OpenMode, PreviewURL, OpenURL, DownloadURL string
-		CanZoom, CanNavigateImages                              bool
-	}
-	items := make([]item, 0, len(entries))
+	shares := loadShareStatuses(dir, time.Now())
+	items := make([]directoryItem, 0, len(entries))
 	for _, entry := range entries {
 		if isPrivateName(entry.Name()) || entry.Type()&os.ModeSymlink != 0 {
 			continue
@@ -566,18 +587,31 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		if info.Mode().IsRegular() {
 			downloadResourceURL = downloadURL(app.Slug, childSegments)
 		}
+		openKind := "download"
+		if info.IsDir() {
+			openKind = "directory"
+		} else if isHTMLName(entry.Name()) {
+			openKind = "html-render"
+			openResourceURL = appResourceURL(app.Slug, "_html", childSegments)
+		} else if previewKind != "" {
+			openKind = "file"
+		}
 		kind, size := "文件", humanSize(info.Size())
 		if info.IsDir() {
 			kind, size = "目录", ""
 		}
-		items = append(items, item{
+		share := shareStatus{State: "disabled"}
+		if configured, ok := shares[entry.Name()]; ok {
+			share = configured
+		}
+		items = append(items, directoryItem{
 			Name: entry.Name(), URL: itemURL, Kind: kind, Size: size,
 			Modified:    info.ModTime().Format("2006-01-02 15:04"),
-			PreviewKind: previewKind, OpenMode: openMode, PreviewURL: previewResourceURL,
+			PreviewKind: previewKind, OpenKind: openKind, OpenMode: openMode, PreviewURL: previewResourceURL,
 			// The template consumes only server-generated capabilities. In particular,
 			// DownloadURL uses the authenticated attachment endpoint rather than the
 			// file's browse URL, so the browser cannot choose an unsafe disposition.
-			OpenURL: openResourceURL, DownloadURL: downloadResourceURL, CanZoom: previewKind == "image",
+			OpenURL: openResourceURL, DownloadURL: downloadResourceURL, CanZoom: previewKind == "image", Share: share,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -586,14 +620,22 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		}
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
 	})
-	imageCount := 0
-	for _, item := range items {
-		if item.PreviewKind == "image" {
-			imageCount++
+	imageIndexes := make([]int, 0, len(items))
+	for index := range items {
+		if items[index].PreviewKind == "image" {
+			imageIndexes = append(imageIndexes, index)
 		}
 	}
-	for i := range items {
-		items[i].CanNavigateImages = items[i].PreviewKind == "image" && imageCount >= 2
+	if len(imageIndexes) > 1 {
+		for position, index := range imageIndexes {
+			items[index].CanNavigateImages = true
+			if position > 0 {
+				items[index].PreviousImage = imageCapability(items[imageIndexes[position-1]])
+			}
+			if position+1 < len(imageIndexes) {
+				items[index].NextImage = imageCapability(items[imageIndexes[position+1]])
+			}
+		}
 	}
 	type crumb struct{ Name, URL string }
 	appPolicy := s.resolveDirectoryPolicy(app, nil)
@@ -623,6 +665,10 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 	}); err != nil {
 		s.logger.Printf("render directory: %v", err)
 	}
+}
+
+func imageCapability(item directoryItem) *imageNavigation {
+	return &imageNavigation{Name: item.Name, PreviewURL: item.PreviewURL, OpenURL: item.OpenURL, DownloadURL: item.DownloadURL, CanZoom: item.CanZoom}
 }
 
 // previewKindFor is the sole format allow-list used by the embedded UI. The
@@ -1136,6 +1182,14 @@ func appURL(slug string, segments []string, directory bool) string {
 
 func previewURL(slug string, segments []string) string {
 	return appResourceURL(slug, "_preview", segments)
+}
+
+func htmlURL(slug string, segments []string) string {
+	return appResourceURL(slug, "_html", segments)
+}
+
+func htmlContentURL(slug string, segments []string) string {
+	return appResourceURL(slug, "_html-content", segments)
 }
 
 func appResourceURL(slug, operation string, segments []string) string {
