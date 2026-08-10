@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
@@ -504,6 +506,7 @@ func TestPreviewKindForUsesNarrowAllowList(t *testing.T) {
 	cases := map[string]string{
 		"photo.AVIF":   "image",
 		"report.PDF":   "pdf",
+		"guide.md":     "markdown",
 		"payload.html": "text",
 		"vector.svg":   "",
 		"script.wasm":  "",
@@ -581,5 +584,96 @@ func TestEmbeddedAccessErrorTemplate(t *testing.T) {
 	s.renderErrorPage(w, r, http.StatusForbidden, "无法访问此文件", "当前资料无法读取。", "./")
 	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "返回上一层") {
 		t.Fatalf("error page status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMarkdownPreviewIsSanitizedAndAuthorizedBeforeRead(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	name := "危险.md"
+	source := "# 标题\n\n<script>alert(1)</script>\n\n[危险](javascript:alert(1)) [站外](https://example.test/a) [同应用](guide.txt)\n\n![远程图片](https://example.test/x.png)"
+	if err := os.WriteFile(filepath.Join(s.apps[slug].Dir, name), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preview := previewURL(slug, []string{name})
+	w := request(t, s, http.MethodGet, preview, nil)
+	if w.Code != http.StatusSeeOther || strings.Contains(w.Body.String(), "标题") {
+		t.Fatalf("unauthorized markdown leaked: status=%d body=%q", w.Code, w.Body.String())
+	}
+	cookie := login(t, s, slug)
+	w = request(t, s, http.MethodGet, preview, nil, cookie)
+	if w.Code != http.StatusOK {
+		t.Fatalf("markdown preview status=%d body=%s", w.Code, w.Body.String())
+	}
+	for key, want := range map[string]string{
+		"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+	} {
+		if !strings.Contains(w.Header().Get(key), want) {
+			t.Errorf("%s=%q, want %q", key, w.Header().Get(key), want)
+		}
+	}
+	body := w.Body.String()
+	for _, forbidden := range []string{"<script>", "javascript:", "<img"} {
+		if strings.Contains(strings.ToLower(body), forbidden) {
+			t.Errorf("unsafe markdown output contains %q: %s", forbidden, body)
+		}
+	}
+	for _, want := range []string{`href="https://example.test/a" target="_blank" rel="noopener noreferrer"`, `href="` + appURL(slug, []string{"guide.txt"}, false) + `"`, "远程图片"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("markdown output missing %q", want)
+		}
+	}
+}
+
+func TestMarkdownLimitsAndDownloadEndpointKeepProtection(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	appDir := s.apps[slug].Dir
+	if err := os.WriteFile(filepath.Join(appDir, "large.md"), bytes.Repeat([]byte("x"), maxMarkdownInput+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "archive.zip"), []byte("zip data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cookie := login(t, s, slug)
+	w := request(t, s, http.MethodGet, previewURL(slug, []string{"large.md"}), nil, cookie)
+	if w.Code != http.StatusRequestEntityTooLarge || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("large markdown status=%d cache=%q", w.Code, w.Header().Get("Cache-Control"))
+	}
+	download := downloadURL(slug, []string{"archive.zip"})
+	w = request(t, s, http.MethodHead, download, nil)
+	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("unauthorized download status=%d", w.Code)
+	}
+	w = request(t, s, http.MethodGet, download, nil, cookie)
+	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Disposition"), "attachment;") || w.Body.String() != "zip data" {
+		t.Fatalf("download status=%d disposition=%q body=%q", w.Code, w.Header().Get("Content-Disposition"), w.Body.String())
+	}
+}
+
+func TestRootPasswordInvalidatesOnlyPublicApplicationSessions(t *testing.T) {
+	s, publicSlug := makeTestServer(t, false)
+	rootPassword := protectedHash(t)
+	s.global = globalConfig{Password: rootPassword, Version: sha256.Sum256([]byte(rootPassword))}
+	publicCookie := login(t, s, publicSlug)
+	privateDir := filepath.Join(s.root, "私有")
+	if err := os.Mkdir(privateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	privatePassword := protectedHash(t)
+	if err := os.WriteFile(filepath.Join(privateDir, ".env"), []byte("PASSWORD='"+privatePassword+"'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(privateDir)
+	s.apps["私有"] = &application{Slug: "私有", Dir: privateDir, ModTime: info.ModTime()}
+	privateCookie := loginWithPassword(t, s, "私有", "测试密码123")
+	newRootPassword, err := hashPassword("新根密码六位数")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.global = globalConfig{Password: newRootPassword, Version: sha256.Sum256([]byte(newRootPassword))}
+	if w := request(t, s, http.MethodGet, appURL(publicSlug, nil, true), nil, publicCookie); w.Code != http.StatusSeeOther {
+		t.Fatalf("old root session survived: %d", w.Code)
+	}
+	if w := request(t, s, http.MethodGet, appURL("私有", nil, true), nil, privateCookie); w.Code != http.StatusOK {
+		t.Fatalf("private session was affected: %d", w.Code)
 	}
 }
