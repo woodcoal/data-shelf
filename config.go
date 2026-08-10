@@ -201,7 +201,11 @@ func loadRootConfig(root, defaultTitle string) (globalConfig, error) {
 	if err != nil {
 		return globalConfig{}, fmt.Errorf("hash global password: %w", err)
 	}
-	updated, err := replaceDocumentPassword(doc, "PASSWORD", hash)
+	passwordKey := "PASSWORD"
+	if doc.keyCount["password"] == 1 {
+		passwordKey = "password"
+	}
+	updated, err := replaceDocumentPassword(doc, passwordKey, hash)
 	if err != nil {
 		return globalConfig{}, err
 	}
@@ -224,20 +228,29 @@ func loadRootConfig(root, defaultTitle string) (globalConfig, error) {
 }
 
 func rootConfigFromDocument(doc envDocument, defaultTitle string) (globalConfig, error) {
-	for _, key := range []string{"NAME", "DESCRIPTION", "PASSWORD"} {
+	for _, key := range []string{"NAME", "DESCRIPTION", "PASSWORD", "title", "description", "password"} {
 		if doc.keyCount[key] > 1 {
 			return globalConfig{}, fmt.Errorf("%s must appear at most once", key)
 		}
 	}
+	usesOld := doc.keyCount["NAME"]+doc.keyCount["DESCRIPTION"]+doc.keyCount["PASSWORD"] > 0
+	usesNew := doc.keyCount["title"]+doc.keyCount["description"]+doc.keyCount["password"] > 0
+	if usesOld && usesNew {
+		return globalConfig{}, errors.New("legacy and lower-case root configuration cannot be mixed")
+	}
+	titleKey, descriptionKey, passwordKey := "NAME", "DESCRIPTION", "PASSWORD"
+	if usesNew {
+		titleKey, descriptionKey, passwordKey = "title", "description", "password"
+	}
 	cfg := globalConfig{SiteTitle: defaultTitle}
-	if doc.keyCount["NAME"] == 1 && doc.values["NAME"] != "" {
-		cfg.SiteTitle = doc.values["NAME"]
+	if doc.keyCount[titleKey] == 1 && doc.values[titleKey] != "" {
+		cfg.SiteTitle = doc.values[titleKey]
 	}
-	if doc.keyCount["DESCRIPTION"] == 1 {
-		cfg.Description = doc.values["DESCRIPTION"]
+	if doc.keyCount[descriptionKey] == 1 {
+		cfg.Description = doc.values[descriptionKey]
 	}
-	if doc.keyCount["PASSWORD"] == 1 {
-		cfg.Password = doc.values["PASSWORD"]
+	if doc.keyCount[passwordKey] == 1 {
+		cfg.Password = doc.values[passwordKey]
 		if cfg.Password == "" {
 			return globalConfig{}, errors.New("PASSWORD is empty")
 		}
@@ -274,7 +287,7 @@ func parseEnv(raw []byte) (envDocument, error) {
 			return doc, errors.New("invalid .env line")
 		}
 		key = strings.TrimSpace(key)
-		if key != "NAME" && key != "DESCRIPTION" && key != "PASSWORD" {
+		if !knownEnvKey(key) {
 			return doc, fmt.Errorf("unknown .env key %q", key)
 		}
 		value, err := parseEnvValue(strings.TrimSpace(valueText))
@@ -288,6 +301,35 @@ func parseEnv(raw []byte) (envDocument, error) {
 		return doc, err
 	}
 	return doc, nil
+}
+
+// knownEnvKey is deliberately case-sensitive.  The upper-case names are kept
+// only for the one-release root/application migration path; nested directory
+// configuration must use the lower-case contract.
+func knownEnvKey(key string) bool {
+	if key == "NAME" || key == "DESCRIPTION" || key == "PASSWORD" || key == "title" || key == "description" || key == "password" {
+		return true
+	}
+	if !strings.HasPrefix(key, "SHARE_") {
+		return false
+	}
+	rest := strings.TrimPrefix(key, "SHARE_")
+	parts := strings.Split(rest, "_")
+	if len(parts) < 2 || parts[0] == "" {
+		return false
+	}
+	for _, r := range parts[0] {
+		if !(r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	field := strings.Join(parts[1:], "_")
+	switch field {
+	case "ENABLED", "SCOPE", "PATH", "TOKEN", "EXPIRES_AT", "PASSWORD", "ALLOW_DOWNLOAD":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseEnvValue(text string) (string, error) {

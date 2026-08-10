@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -39,11 +40,11 @@ func run() error {
 		fmt.Fprintln(flag.CommandLine.Output(), "\n参数：")
 		flag.PrintDefaults()
 		fmt.Fprintln(flag.CommandLine.Output(), "\n配置：")
-		fmt.Fprintln(flag.CommandLine.Output(), "  数据根目录为显式 -dir 或启动目录；根 .env 固定在 <数据根>/.env，仅支持 NAME、DESCRIPTION、PASSWORD。")
-		fmt.Fprintln(flag.CommandLine.Output(), "  -title 优先于根 .env 的 NAME；密码不提供命令行参数。PASSWORD 使用 plain: 或 hash:；plain: 会迁移为 Argon2id 哈希。")
+		fmt.Fprintln(flag.CommandLine.Output(), "  数据根及任意真实子目录可放置 .env；规范字段严格为小写 title、description、password。根/应用根暂兼容一次旧 NAME、DESCRIPTION、PASSWORD 迁移。")
+		fmt.Fprintln(flag.CommandLine.Output(), "  -title 优先于根 .env 的 title；密码不提供命令行参数。password 使用 plain: 或 hash:；plain: 会迁移为 Argon2id 哈希。")
 		fmt.Fprintln(flag.CommandLine.Output(), "\n目录与安全：")
-		fmt.Fprintln(flag.CommandLine.Output(), "  数据根目录的每个普通一级目录是一个应用；.env 可设置该应用私有密码。")
-		fmt.Fprintln(flag.CommandLine.Output(), "  公开应用会在全局密码开启时要求全局密码；私有应用始终只使用自己的密码。")
+		fmt.Fprintln(flag.CommandLine.Output(), "  数据根目录的每个普通一级目录是一个应用；密码按最近有效祖先 .env 继承，子目录密码创建独立授权边界。")
+		fmt.Fprintln(flag.CommandLine.Output(), "  .env、隐藏文件与链接不会通过 HTTP 提供；受控预览、下载和 HTML 视图均位于 /<应用>/ 前缀。")
 		fmt.Fprintln(flag.CommandLine.Output(), "  对局域网访问请在 HTTPS 反向代理后使用，密码和资料内容不会通过 HTTP 明文保护。")
 	}
 	flag.Parse()
@@ -175,6 +176,10 @@ func requestLogger(logger *log.Logger, next http.Handler) http.Handler {
 		if status == 0 {
 			status = http.StatusOK
 		}
-		logger.Printf("%s %s %d", r.Method, r.URL.EscapedPath(), status)
+		path := r.URL.EscapedPath()
+		if strings.HasPrefix(path, "/_s/") {
+			path = "/_s/[redacted]"
+		}
+		logger.Printf("%s %s %d", r.Method, path, status)
 	})
 }

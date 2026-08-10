@@ -79,7 +79,8 @@ func loginWithPassword(t *testing.T, s *server, slug, password string) *http.Coo
 
 func loginCookieForOperation(t *testing.T, s *server, slug, password, operation string) *http.Cookie {
 	t.Helper()
-	wantName := s.sessions.controlledCookieName(slug, operation)
+	_ = operation
+	wantName := s.sessions.cookieName(slug)
 	for _, cookie := range loginCookies(t, s, slug, password) {
 		if cookie.Name == wantName {
 			return cookie
@@ -101,8 +102,8 @@ func loginCookies(t *testing.T, s *server, slug, password string) []*http.Cookie
 		t.Fatalf("login status=%d body=%s", w.Code, w.Body.String())
 	}
 	result := w.Result().Cookies()
-	if len(result) != 3 {
-		t.Fatalf("expected three scoped session cookies, got %d", len(result))
+	if len(result) != 1 {
+		t.Fatalf("expected one application-scoped session cookie, got %d", len(result))
 	}
 	return result
 }
@@ -131,17 +132,8 @@ func TestCanonicalRoutesLegacyRedirectAndReturnTargets(t *testing.T) {
 	if cookie.Path != canonicalRoot {
 		t.Fatalf("cookie path=%q want=%q", cookie.Path, canonicalRoot)
 	}
-	paths := map[string]string{}
-	for _, issued := range cookies {
-		paths[issued.Name] = issued.Path
-	}
-	for name, wantPath := range map[string]string{
-		s.sessions.controlledCookieName(slug, "preview"):  "/_preview/" + url.PathEscape(slug) + "/",
-		s.sessions.controlledCookieName(slug, "download"): "/_download/" + url.PathEscape(slug) + "/",
-	} {
-		if paths[name] != wantPath {
-			t.Errorf("cookie %s path=%q want=%q", name, paths[name], wantPath)
-		}
+	if cookies[0].Path != canonicalRoot {
+		t.Fatalf("session cookie path=%q want=%q", cookies[0].Path, canonicalRoot)
 	}
 	for _, target := range []string{"https://example.invalid/", "/other/secret.txt", "/a/" + url.PathEscape(slug) + "/secret.txt", "/" + url.PathEscape(slug) + "/%252e%252e/secret.txt"} {
 		if got := safeReturnTarget(target, slug); got != canonicalRoot {
@@ -338,7 +330,7 @@ func TestScopedSessionCookiesAuthorizePreviewAndDownloadWithoutCrossAppAccess(t 
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if response.StatusCode != http.StatusSeeOther || !strings.Contains(response.Header.Get("Location"), "/_auth/"+url.PathEscape(second)) {
+	if response.StatusCode != http.StatusSeeOther || !strings.Contains(response.Header.Get("Location"), "/"+url.PathEscape(second)+"/_auth") {
 		t.Fatalf("first application session crossed into second application: status=%d location=%q", response.StatusCode, response.Header.Get("Location"))
 	}
 }
@@ -446,7 +438,7 @@ func TestPrivateLinkedAndTraversalPathsAreDenied(t *testing.T) {
 	}
 }
 
-func TestRootIndexRunsButNestedHTMLIsPlainText(t *testing.T) {
+func TestHTMLAlwaysUsesControlledView(t *testing.T) {
 	s, slug := makeTestServer(t, false)
 	appDir := s.apps[slug].Dir
 	if err := os.WriteFile(filepath.Join(appDir, "index.html"), []byte("<h1>root</h1>"), 0o644); err != nil {
@@ -459,12 +451,12 @@ func TestRootIndexRunsButNestedHTMLIsPlainText(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := request(t, s, http.MethodGet, appURL(slug, nil, true), nil)
-	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") {
-		t.Fatalf("root index status=%d type=%q", w.Code, w.Header().Get("Content-Type"))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != appResourceURL(slug, "_html", []string{"index.html"}) {
+		t.Fatalf("root index was not redirected to controlled HTML view: status=%d location=%q", w.Code, w.Header().Get("Location"))
 	}
 	w = request(t, s, http.MethodGet, appURL(slug, []string{"nested", "index.html"}, false), nil)
-	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/plain; charset=utf-8" {
-		t.Fatalf("nested html status=%d type=%q", w.Code, w.Header().Get("Content-Type"))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != appResourceURL(slug, "_html", []string{"nested", "index.html"}) {
+		t.Fatalf("nested HTML was not redirected to controlled view: status=%d location=%q", w.Code, w.Header().Get("Location"))
 	}
 }
 
@@ -561,7 +553,7 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 	s, _ := makeTestServer(t, false)
 	type item struct {
 		Name, URL, PreviewURL, PreviewKind, OpenMode, OpenURL, DownloadURL, Kind, Size, Modified string
-		CanZoom                                                                                  bool
+		CanZoom, CanNavigateImages                                                               bool
 	}
 	var body strings.Builder
 	err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{
@@ -593,6 +585,7 @@ func TestDirectoryTemplateHonorsServerDownloadOpenMode(t *testing.T) {
 	s, _ := makeTestServer(t, false)
 	type item struct {
 		Name, URL, PreviewURL, PreviewKind, OpenMode, Kind, Size, Modified string
+		CanNavigateImages                                                  bool
 	}
 	var body strings.Builder
 	err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{
