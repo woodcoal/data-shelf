@@ -51,6 +51,8 @@ PASSWORD='plain:首次设置的密码'
 
 后端为模板提供受控预览契约：`PreviewKind` 为 `none`、`image`、`pdf`、`text` 或 `markdown`，并提供服务端生成的 `PreviewURL`、`OpenURL`、`DownloadURL` 和图片专用的 `CanZoom`。`/_preview` 与 `/_download` 均先完成应用认证，再解析文件、MIME、Range 或条件请求；下载始终使用安全的 `Content-Disposition: attachment`。
 
+一次登录会为应用页、`/_preview/<应用>/` 与 `/_download/<应用>/` 分别签发同一应用专用、`HttpOnly` 的路径限定会话 Cookie；不会使用站点根路径 Cookie，也不能授权其他应用。
+
 `.md`/`.markdown` 仅在普通文件且不超过 1 MiB 时作为 Markdown 候选。服务端使用 Goldmark 渲染，禁用原始 HTML 和图片嵌入，移除脚本协议与危险链接；同应用相对链接会重写为受控规范 URL，外部 HTTP(S) 链接使用 `noopener noreferrer`。Markdown 预览是带严格 CSP 的完整沙箱文档，受保护响应保持 `private, no-store`。SVG、Office、压缩包和未知二进制仅可下载。
 
 ## 构建与测试

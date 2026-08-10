@@ -38,6 +38,24 @@ func (m *sessionManager) cookieName(app string) string {
 	return "datashelf_session_" + hex.EncodeToString(sum[:8])
 }
 
+// controlledCookieName separates cookies that must be sent to the reserved
+// preview/download namespaces from the application-page cookie. This avoids a
+// site-wide Path=/ cookie while keeping a session bound to one application.
+func (m *sessionManager) controlledCookieName(app, operation string) string {
+	return m.cookieName(app) + "_" + operation
+}
+
+func (m *sessionManager) cookieNameForRequest(app, escapedPath string) string {
+	escapedApp := url.PathEscape(app)
+	if strings.HasPrefix(escapedPath, "/_preview/"+escapedApp+"/") {
+		return m.controlledCookieName(app, "preview")
+	}
+	if strings.HasPrefix(escapedPath, "/_download/"+escapedApp+"/") {
+		return m.controlledCookieName(app, "download")
+	}
+	return m.cookieName(app)
+}
+
 func (m *sessionManager) issue(app string, version [32]byte) string {
 	payload := fmt.Sprintf("%s\n%x\n%d", app, version, m.now().Unix())
 	mac := hmac.New(sha256.New, m.secret)
