@@ -94,7 +94,7 @@ func TestHTMLAndShareStayInTheirOwnAuthorizationBoundaries(t *testing.T) {
 		t.Fatalf("HTML route=%d location=%q", w.Code, w.Header().Get("Location"))
 	}
 	w = request(t, s, http.MethodGet, appResourceURL("docs", "_html-content", []string{"report.html"}), nil)
-	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/html; charset=utf-8" || !strings.Contains(w.Header().Get("Content-Security-Policy"), "script-src 'none'") || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/html; charset=utf-8" || !strings.Contains(w.Header().Get("Content-Security-Policy"), "sandbox allow-scripts") || strings.Contains(w.Header().Get("Content-Security-Policy"), "allow-same-origin") || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
 		t.Fatalf("HTML content headers status=%d csp=%q cache=%q", w.Code, w.Header().Get("Content-Security-Policy"), w.Header().Get("Cache-Control"))
 	}
 

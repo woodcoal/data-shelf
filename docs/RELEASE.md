@@ -43,7 +43,7 @@ sha256sum -c SHA256SUMS
 - 日志写到标准输出和标准错误。直接运行时可重定向到文件；systemd、launchd 和 Windows 任务脚本分别提供系统日志或日志文件配置。
 - LAN 访问必须显式设置 `-host 0.0.0.0`（或具体 LAN 地址），并同步配置防火墙。程序没有内置 TLS，暴露 LAN 时必须放在 HTTPS 反向代理后面；否则密码和资料可能被窃听。
 - 默认 loopback 只适合本机访问，不应通过端口转发或公网反向代理暴露。
-- `.env` 中的 `plain:` 密码只用于首次启动迁移，程序会替换为 Argon2id 哈希。不要把包含密码的 `.env`、日志或运行时配置提交到 Git。
+- `.env` 中无前缀的首次密码会在首次读取时替换为 Argon2id `hash:`；`plain:` 仅保留一周期兼容。不要把包含密码的 `.env`、日志或运行时配置提交到 Git。
 
 ## Linux systemd user service
 

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,6 +30,7 @@ type server struct {
 	root     string
 	title    string
 	global   globalConfig
+	appsMu   sync.RWMutex
 	apps     map[string]*application
 	sessions *sessionManager
 	limiter  *loginLimiter
@@ -81,7 +83,7 @@ func newServerWithConfig(root, title string, global globalConfig, logger *log.Lo
 	if err != nil {
 		return nil, fmt.Errorf("initialize sessions: %w", err)
 	}
-	pages, err := template.New("pages").Funcs(template.FuncMap{"pathEscape": url.PathEscape}).Parse(pageTemplates)
+	pages, err := template.New("pages").Funcs(template.FuncMap{"pathEscape": url.PathEscape, "assetURL": assetURL}).Parse(pageTemplates)
 	if err != nil {
 		return nil, err
 	}
@@ -96,10 +98,34 @@ func newServerWithConfig(root, title string, global globalConfig, logger *log.Lo
 }
 
 func (s *server) scanApps() error {
+	apps, err := s.discoverApps()
+	if err != nil {
+		return err
+	}
+	s.apps = apps
+	return nil
+}
+
+// refreshApps builds a complete new snapshot before publishing it. Requests
+// never reuse the last good snapshot after the data root becomes unreadable:
+// doing so could expose an application that an administrator has withdrawn.
+func (s *server) refreshApps() error {
+	apps, err := s.discoverApps()
+	if err != nil {
+		return err
+	}
+	s.appsMu.Lock()
+	s.apps = apps
+	s.appsMu.Unlock()
+	return nil
+}
+
+func (s *server) discoverApps() (map[string]*application, error) {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
-		return fmt.Errorf("scan data directory: %w", err)
+		return nil, fmt.Errorf("scan data directory: %w", err)
 	}
+	apps := make(map[string]*application, len(entries))
 	for _, entry := range entries {
 		if isPrivateName(entry.Name()) || entry.Name() == "a" || strings.HasPrefix(entry.Name(), "_") || entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
 			if entry.Name() == "a" || strings.HasPrefix(entry.Name(), "_") {
@@ -112,15 +138,27 @@ func (s *server) scanApps() error {
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
-		cfg, cfgErr := loadAppConfig(path, entry.Name())
-		if cfgErr != nil {
-			s.logger.Printf("application %q is locked: %v", entry.Name(), cfgErr)
-		}
 		app := &application{Slug: entry.Name(), Dir: path, ModTime: info.ModTime()}
-		app.state.config = cfg
-		s.apps[entry.Name()] = app
+		apps[entry.Name()] = app
 	}
-	return nil
+	return apps, nil
+}
+
+func (s *server) app(slug string) (*application, bool) {
+	s.appsMu.RLock()
+	defer s.appsMu.RUnlock()
+	app, ok := s.apps[slug]
+	return app, ok
+}
+
+func (s *server) appSnapshot() map[string]*application {
+	s.appsMu.RLock()
+	defer s.appsMu.RUnlock()
+	apps := make(map[string]*application, len(s.apps))
+	for slug, app := range s.apps {
+		apps[slug] = app
+	}
+	return apps
 }
 
 func (s *server) refreshConfig(app *application) appConfig {
@@ -146,6 +184,12 @@ func (s *server) effectiveConfig(app *application) appConfig {
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if err := s.refreshApps(); err != nil {
+		s.logger.Printf("refresh applications: %v", err)
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "资料根目录暂时不可用", http.StatusServiceUnavailable)
+		return
+	}
 	segments, err := decodePathSegments(r.URL.EscapedPath())
 	if err != nil {
 		http.NotFound(w, r)
@@ -153,6 +197,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(segments) == 1 && segments[0] == "" {
 		s.home(w, r)
+		return
+	}
+	if len(segments) == 2 && segments[0] == "_assets" {
+		s.serveAsset(w, r, segments[1])
 		return
 	}
 	if len(segments) >= 2 && segments[0] == "_s" {
@@ -183,7 +231,11 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) redirectLegacyResource(w http.ResponseWriter, r *http.Request, slug, operation string, segments []string) {
-	if (r.Method != http.MethodGet && r.Method != http.MethodHead) || len(segments) == 0 || s.apps[slug] == nil {
+	if (r.Method != http.MethodGet && r.Method != http.MethodHead) || len(segments) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	if _, ok := s.app(slug); !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -227,7 +279,7 @@ func (s *server) redirectLegacyApp(w http.ResponseWriter, r *http.Request, slug 
 		http.NotFound(w, r)
 		return
 	}
-	if _, ok := s.apps[slug]; !ok {
+	if _, ok := s.app(slug); !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -246,21 +298,19 @@ func (s *server) home(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-cache")
 	type card struct {
 		Slug, Name, Description, URL string
 		Protected, Locked            bool
 		ModTime                      time.Time
 	}
-	cards := make([]card, 0, len(s.apps))
-	for _, app := range s.apps {
+	apps := s.appSnapshot()
+	cards := make([]card, 0, len(apps))
+	for _, app := range apps {
 		policy := s.resolveDirectoryPolicy(app, nil)
-		name, description := policy.Title, policy.Description
-		if policy.Protected || policy.Locked {
-			// A card is rendered before authentication. Do not disclose private
-			// directory metadata through the application listing.
-			name, description = "受保护资料", ""
-		}
-		cards = append(cards, card{app.Slug, name, description, appURL(app.Slug, nil, true), policy.Protected, policy.Locked, app.ModTime})
+		// Titles and descriptions are explicitly public directory metadata. The
+		// policy never exposes its password, hash, boundary, or share settings.
+		cards = append(cards, card{app.Slug, policy.Title, policy.Description, appURL(app.Slug, nil, true), policy.Protected, policy.Locked, app.ModTime})
 	}
 	if r.URL.Query().Get("sort") == "name" {
 		sort.Slice(cards, func(i, j int) bool { return strings.ToLower(cards[i].Name) < strings.ToLower(cards[j].Name) })
@@ -285,7 +335,7 @@ func (s *server) home(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) auth(w http.ResponseWriter, r *http.Request, slug string) {
-	app, ok := s.apps[slug]
+	app, ok := s.app(slug)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -340,7 +390,7 @@ func (s *server) auth(w http.ResponseWriter, r *http.Request, slug string) {
 // below /<slug>/ is what makes the single Path=/slug/ session cookie reach
 // every protected view without widening it to the site root.
 func (s *server) authApp(w http.ResponseWriter, r *http.Request, slug string) {
-	app, ok := s.apps[slug]
+	app, ok := s.app(slug)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -422,7 +472,7 @@ func (s *server) renderLoginStatus(w http.ResponseWriter, r *http.Request, cfg a
 }
 
 func (s *server) serveApp(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
-	app, ok := s.apps[slug]
+	app, ok := s.app(slug)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -464,14 +514,6 @@ func (s *server) serveApp(w http.ResponseWriter, r *http.Request, slug string, s
 		if !strings.HasSuffix(r.URL.EscapedPath(), "/") {
 			http.Redirect(w, r, r.URL.EscapedPath()+"/", http.StatusPermanentRedirect)
 			return
-		}
-		if len(pathSegments) == 0 {
-			indexPath, indexInfo, indexErr := resolveSafePath(app.Dir, []string{"index.html"})
-			if indexErr == nil && indexInfo.Mode().IsRegular() {
-				_ = indexPath
-				http.Redirect(w, r, appResourceURL(slug, "_html", []string{"index.html"}), http.StatusPermanentRedirect)
-				return
-			}
 		}
 		policy = s.resolveDirectoryPolicy(app, pathSegments)
 		if !s.authorizePolicy(w, r, app, policy) {
@@ -659,6 +701,9 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		displayName = segments[len(segments)-1]
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if !cfg.Protected {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 	setPageSecurityHeaders(w)
 	if r.Method == http.MethodHead {
 		return
@@ -703,7 +748,7 @@ func isHTMLName(name string) bool {
 }
 
 func (s *server) appResource(w http.ResponseWriter, r *http.Request, slug string, segments []string, operation string) (*application, string, fs.FileInfo, directoryPolicy, bool) {
-	app, ok := s.apps[slug]
+	app, ok := s.app(slug)
 	if !ok || len(segments) == 0 || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
 		http.NotFound(w, r)
 		return nil, "", nil, directoryPolicy{}, false
@@ -764,7 +809,7 @@ func (s *server) downloadApp(w http.ResponseWriter, r *http.Request, slug string
 }
 
 func (s *server) htmlShell(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
-	_, _, info, _, ok := s.appResource(w, r, slug, segments, "_html")
+	_, _, info, policy, ok := s.appResource(w, r, slug, segments, "_html")
 	if !ok {
 		return
 	}
@@ -784,11 +829,17 @@ func (s *server) htmlShell(w http.ResponseWriter, r *http.Request, slug string, 
 	content := template.HTMLEscapeString(appResourceURL(slug, "_html-content", segments))
 	source := template.HTMLEscapeString(appResourceURL(slug, "_preview", segments))
 	download := template.HTMLEscapeString(appResourceURL(slug, "_download", segments))
-	_, _ = fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>%s</title><p><a href='../'>返回</a> · <a href='%s'>查看源码</a> · <a href='%s'>下载</a></p><p>外部资源与脚本已禁用，页面可能与原始站点不同。</p><iframe title='%s' sandbox src='%s' style='width:100%%;min-height:80vh;border:1px solid #bbb'></iframe>", name, source, download, name, content)
+	sandbox := ""
+	notice := "脚本已按目录安全策略禁用。"
+	if policy.HTMLScriptsAllowed {
+		sandbox = " allow-scripts"
+		notice = "脚本可在隔离沙箱中运行；页面不会获得资料架同源权限。"
+	}
+	_, _ = fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>%s</title><p><a href='../'>返回</a> · <a href='%s'>查看源码</a> · <a href='%s'>下载</a></p><p>%s</p><iframe title='%s' sandbox='%s' src='%s' style='width:100%%;min-height:80vh;border:1px solid #bbb'></iframe>", name, source, download, notice, name, sandbox, content)
 }
 
 func (s *server) htmlContent(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
-	_, target, info, _, ok := s.appResource(w, r, slug, segments, "_html-content")
+	_, target, info, policy, ok := s.appResource(w, r, slug, segments, "_html-content")
 	if !ok {
 		return
 	}
@@ -802,12 +853,16 @@ func (s *server) htmlContent(w http.ResponseWriter, r *http.Request, slug string
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Permissions-Policy", "accelerometer=(), camera=(), clipboard-read=(), clipboard-write=(), geolocation=(), microphone=(), payment=(), usb=()")
-	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; script-src 'none'; connect-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'")
+	csp := "sandbox; default-src 'none'; script-src 'none'; connect-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+	if policy.HTMLScriptsAllowed {
+		csp = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+	}
+	w.Header().Set("Content-Security-Policy", csp)
 	s.serveHTMLContent(w, r, target, info)
 }
 
 func (s *server) preview(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
-	app, ok := s.apps[slug]
+	app, ok := s.app(slug)
 	if !ok || len(segments) == 0 || r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.NotFound(w, r)
 		return
@@ -876,7 +931,7 @@ func (s *server) serveMarkdown(w http.ResponseWriter, r *http.Request, slug stri
 }
 
 func (s *server) download(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
-	app, ok := s.apps[slug]
+	app, ok := s.app(slug)
 	if !ok || len(segments) == 0 || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
 		http.NotFound(w, r)
 		return
@@ -1053,7 +1108,11 @@ func (s *server) share(w http.ResponseWriter, r *http.Request, segments []string
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Permissions-Policy", "accelerometer=(), camera=(), clipboard-read=(), clipboard-write=(), geolocation=(), microphone=(), payment=(), usb=()")
-		w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; script-src 'none'; connect-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'")
+		csp := "sandbox; default-src 'none'; script-src 'none'; connect-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+		if share.HTMLScriptsAllowed {
+			csp = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+		}
+		w.Header().Set("Content-Security-Policy", csp)
 		s.serveHTMLContent(w, r, path, info)
 	default:
 		http.NotFound(w, r)
@@ -1066,7 +1125,7 @@ func (s *server) shareGate(w http.ResponseWriter, r *http.Request, share shareDe
 		return
 	}
 	if s.shareAuthorized(r, share, token) {
-		http.Redirect(w, r, "/_s/"+url.PathEscape(token)+"/_preview", http.StatusSeeOther)
+		http.Redirect(w, r, shareOpenURL(token, share.Filename), http.StatusSeeOther)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1106,7 +1165,15 @@ func (s *server) shareAuth(w http.ResponseWriter, r *http.Request, share shareDe
 		maxAge = int((8 * time.Hour).Seconds())
 	}
 	http.SetCookie(w, &http.Cookie{Name: shareCookieName(token), Value: value, Path: "/_s/" + url.PathEscape(token) + "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: requestIsHTTPS(r), MaxAge: maxAge})
-	http.Redirect(w, r, "/_s/"+url.PathEscape(token)+"/_preview", http.StatusSeeOther)
+	http.Redirect(w, r, shareOpenURL(token, share.Filename), http.StatusSeeOther)
+}
+
+func shareOpenURL(token, filename string) string {
+	operation := "_preview"
+	if isHTMLName(filename) {
+		operation = "_html"
+	}
+	return "/_s/" + url.PathEscape(token) + "/" + operation
 }
 
 func (s *server) shareAuthorized(r *http.Request, share shareDefinition, token string) bool {
@@ -1131,13 +1198,18 @@ func (s *server) shareHTMLShell(w http.ResponseWriter, r *http.Request, share sh
 		return
 	}
 	base := "/_s/" + url.PathEscape(token) + "/"
-	_, _ = fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>%s</title><p><a href='%s_preview'>查看源码</a></p><iframe title='%s' sandbox src='%s_html-content' style='width:100%%;min-height:80vh;border:1px solid #bbb'></iframe>", template.HTMLEscapeString(info.Name()), base, template.HTMLEscapeString(info.Name()), base)
+	sandbox := ""
+	if share.HTMLScriptsAllowed {
+		sandbox = " allow-scripts"
+	}
+	_, _ = fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>%s</title><p><a href='%s_preview'>查看源码</a></p><iframe title='%s' sandbox='%s' src='%s_html-content' style='width:100%%;min-height:80vh;border:1px solid #bbb'></iframe>", template.HTMLEscapeString(info.Name()), base, template.HTMLEscapeString(info.Name()), sandbox, base)
 }
 
 // renderErrorPage keeps user-visible file access failures inside the same
 // embedded UI. Callers reach it only after authorization has completed.
 func (s *server) renderErrorPage(w http.ResponseWriter, r *http.Request, status int, heading, detail, backURL string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
 	setPageSecurityHeaders(w)
 	w.WriteHeader(status)
 	if r.Method == http.MethodHead {

@@ -20,13 +20,16 @@ type directoryPolicy struct {
 	Title, Description string
 	Password           string
 	Protected, Locked  bool
+	HTMLScriptsAllowed bool
 	Boundary           string
 	Version            [32]byte
 }
 
 type directoryEnv struct {
 	title, description, password          string
+	htmlScripts                           string
 	hasTitle, hasDescription, hasPassword bool
+	hasHTMLScripts                        bool
 	doc                                   envDocument
 	raw                                   []byte
 }
@@ -51,7 +54,7 @@ func readDirectoryEnv(dir string, legacyAllowed bool) (directoryEnv, error) {
 	if err != nil {
 		return directoryEnv{}, err
 	}
-	for _, key := range []string{"title", "description", "password", "NAME", "DESCRIPTION", "PASSWORD"} {
+	for _, key := range []string{"title", "description", "password", "html_scripts", "NAME", "DESCRIPTION", "PASSWORD"} {
 		if doc.keyCount[key] > 1 {
 			return directoryEnv{}, fmt.Errorf("%s must appear at most once", key)
 		}
@@ -69,6 +72,10 @@ func readDirectoryEnv(dir string, legacyAllowed bool) (directoryEnv, error) {
 		e.title, e.description, e.password = doc.values["title"], doc.values["description"], doc.values["password"]
 		e.hasTitle, e.hasDescription, e.hasPassword = doc.keyCount["title"] == 1, doc.keyCount["description"] == 1, doc.keyCount["password"] == 1
 	}
+	e.htmlScripts, e.hasHTMLScripts = doc.values["html_scripts"], doc.keyCount["html_scripts"] == 1
+	if e.hasHTMLScripts && e.htmlScripts != "allow" && e.htmlScripts != "deny" {
+		return directoryEnv{}, errors.New("html_scripts must be allow or deny")
+	}
 	if e.hasTitle && len(e.title) > 8<<10 || e.hasDescription && len(e.description) > 4<<10 {
 		return directoryEnv{}, errors.New("directory text exceeds limit")
 	}
@@ -76,11 +83,15 @@ func readDirectoryEnv(dir string, legacyAllowed bool) (directoryEnv, error) {
 		if e.password == "" {
 			return directoryEnv{}, errors.New("password is empty")
 		}
-		if strings.HasPrefix(e.password, "plain:") {
-			if err := validatePlainPassword(strings.TrimPrefix(e.password, "plain:")); err != nil {
+		if !strings.HasPrefix(e.password, "hash:") && !strings.HasPrefix(e.password, "plain:") && strings.Contains(e.password, ":") {
+			return directoryEnv{}, errors.New("unknown password format")
+		}
+		if !strings.HasPrefix(e.password, "hash:") {
+			plain := strings.TrimPrefix(e.password, "plain:")
+			if err := validatePlainPassword(plain); err != nil {
 				return directoryEnv{}, err
 			}
-			hash, err := hashPassword(strings.TrimPrefix(e.password, "plain:"))
+			hash, err := hashPassword(plain)
 			if err != nil {
 				return directoryEnv{}, err
 			}
@@ -96,8 +107,6 @@ func readDirectoryEnv(dir string, legacyAllowed bool) (directoryEnv, error) {
 				return directoryEnv{}, fmt.Errorf("migrate password: %w", err)
 			}
 			return readDirectoryEnv(dir, legacyAllowed)
-		} else if !strings.HasPrefix(e.password, "hash:") {
-			return directoryEnv{}, errors.New("unknown password format")
 		} else if _, err := decodePasswordHash(e.password); err != nil {
 			return directoryEnv{}, err
 		}
@@ -108,6 +117,9 @@ func readDirectoryEnv(dir string, legacyAllowed bool) (directoryEnv, error) {
 func verifyConfiguredPassword(encoded, supplied string) bool {
 	if strings.HasPrefix(encoded, "plain:") {
 		return subtleCompare(strings.TrimPrefix(encoded, "plain:"), supplied)
+	}
+	if !strings.HasPrefix(encoded, "hash:") {
+		return subtleCompare(encoded, supplied)
 	}
 	return verifyPassword(encoded, supplied)
 }
@@ -128,7 +140,7 @@ func subtleCompare(a, b string) bool {
 // intentionally local, while password inheritance follows the nearest valid
 // password boundary.
 func (s *server) resolveDirectoryPolicy(app *application, segments []string) directoryPolicy {
-	p := directoryPolicy{}
+	p := directoryPolicy{HTMLScriptsAllowed: true}
 	chain := sha256.New()
 	dirs := []string{s.root, app.Dir}
 	current := app.Dir
@@ -162,6 +174,9 @@ func (s *server) resolveDirectoryPolicy(app *application, segments []string) dir
 				p.Boundary = strings.Join(segments[:i-1], "/")
 			}
 		}
+		if entry.hasHTMLScripts {
+			p.HTMLScriptsAllowed = entry.htmlScripts == "allow"
+		}
 	}
 	// Legacy startup configuration is still accepted for one migration release.
 	// It behaves exactly like a root boundary when no lower-case root password
@@ -189,6 +204,7 @@ type shareDefinition struct {
 	OwnerDir, Filename  string
 	Expires             time.Time
 	AllowDownload       bool
+	HTMLScriptsAllowed  bool
 	Version             [32]byte
 }
 
@@ -248,7 +264,7 @@ func sharesFromEnv(app *application, owner string, policy directoryPolicy) ([]sh
 			return nil, errors.New("invalid share target")
 		}
 		identity := fmt.Sprintf("%s\x00%d\x00%d\x00%x", path, info.Size(), info.ModTime().UnixNano(), policy.Version)
-		result = append(result, shareDefinition{ID: id, Token: values["TOKEN"], Password: values["PASSWORD"], App: app, OwnerDir: owner, Filename: values["PATH"], Expires: expires, AllowDownload: allow, Version: sha256.Sum256([]byte(identity))})
+		result = append(result, shareDefinition{ID: id, Token: values["TOKEN"], Password: values["PASSWORD"], App: app, OwnerDir: owner, Filename: values["PATH"], Expires: expires, AllowDownload: allow, HTMLScriptsAllowed: policy.HTMLScriptsAllowed, Version: sha256.Sum256([]byte(identity))})
 	}
 	return result, nil
 }
@@ -269,7 +285,7 @@ func (s *server) findShare(token string) (shareDefinition, bool) {
 	if err != nil || len(decoded) != 32 {
 		return shareDefinition{}, false
 	}
-	for _, app := range s.apps {
+	for _, app := range s.appSnapshot() {
 		var found *shareDefinition
 		_ = filepath.WalkDir(app.Dir, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil || found != nil {
