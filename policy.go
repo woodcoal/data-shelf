@@ -159,8 +159,18 @@ func (s *server) resolveDirectoryPolicy(app *application, segments []string) dir
 			p.Locked, p.Protected = true, true
 			return p
 		}
-		chain.Write(entry.raw)
-		chain.Write([]byte{0})
+		// Only configuration which affects authorization or HTML isolation belongs
+		// in the session policy version.  In particular, a missing .env (or one
+		// containing only local presentation/share fields) must not turn every
+		// otherwise-transparent directory into a distinct session boundary.
+		// Include the chain position so adding, changing, or removing an effective
+		// ancestor security setting invalidates sessions for its descendants.
+		if entry.hasPassword {
+			_, _ = fmt.Fprintf(chain, "%d\x00password\x00%s\x00", i, entry.password)
+		}
+		if entry.hasHTMLScripts {
+			_, _ = fmt.Fprintf(chain, "%d\x00html_scripts\x00%s\x00", i, entry.htmlScripts)
+		}
 		if i == len(dirs)-1 {
 			display = entry
 		}
