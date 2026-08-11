@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -344,10 +345,11 @@ func validShareID(value string) bool {
 	return true
 }
 
-// loadShareStatuses is intentionally status-only. It validates the narrow,
-// direct-parent SHARE_* model before publishing non-secret UI state. Any I/O,
-// syntax or policy error returns the closed default; credentials and target
-// configuration never escape this function.
+// loadShareStatuses validates the narrow, direct-parent SHARE_* model before
+// publishing UI capabilities for an already authorized directory render. Any
+// I/O, syntax or policy error returns the closed default; credentials and
+// target configuration never escape this function except through a complete
+// ShareURL for a currently available share.
 func loadShareStatuses(dir string, now time.Time) map[string]shareStatus {
 	closed := make(map[string]shareStatus)
 	path := filepath.Join(dir, ".env")
@@ -408,9 +410,13 @@ func loadShareStatuses(dir string, now time.Time) map[string]shareStatus {
 		if !expiresAt.After(now) {
 			state = "expired"
 		}
-		closed[group.values["PATH"]] = shareStatus{
+		status := shareStatus{
 			State: "" + state, RequiresPassword: true, ExpiresAt: expiresAt.Format(time.RFC3339), CanDownload: group.values["ALLOW_DOWNLOAD"] == "true",
 		}
+		if state == "available" {
+			status.ShareURL = "/_s/" + url.PathEscape(group.values["TOKEN"]) + "/"
+		}
+		closed[group.values["PATH"]] = status
 	}
 	return closed
 }
