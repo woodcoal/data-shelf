@@ -59,7 +59,7 @@ test.beforeAll(async () => {
   dataRoot = await mkdtemp(path.join(os.tmpdir(), "datashelf-ui-"));
   const docs = path.join(dataRoot, "docs");
   await mkdir(docs);
-  await writeFile(path.join(docs, ".env"), "title='浏览器断言资料'\npassword='plain:浏览器断言密码123'\n");
+  await writeFile(path.join(docs, ".env"), "title='浏览器断言资料'\npassword='plain:浏览器断言密码123'\nSHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='page.html'\nSHARE_DOC_TOKEN='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'\nSHARE_DOC_EXPIRES_AT='2000-01-01T00:00:00Z'\nSHARE_DOC_PASSWORD='plain:浏览器断言密码123'\n");
   await writeFile(path.join(docs, "page.html"), "<!doctype html><h1>受控 HTML</h1>");
   const port = await reservePort();
   baseURL = "http://127.0.0.1:" + port;
@@ -111,4 +111,12 @@ test("HTML 文件名进入受控视图，源码按钮保留弹窗预览", async 
   await page.getByRole("button", { name: "预览源码" }).click();
   await expect(page.locator("#preview-dialog")).toHaveAttribute("open", "");
   await expect(page.locator("#preview-kind-label")).toHaveText("HTML 源码预览");
+});
+
+test("过期分享不会显示无效分享操作", async ({ page }) => {
+  await signIn(page);
+  await page.getByRole("button", { name: "预览源码" }).click();
+  await expect(page.locator("#preview-share-actions")).toBeHidden();
+  await expect(page.getByRole("link", { name: "打开分享" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "复制链接" })).toBeHidden();
 });
