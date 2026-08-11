@@ -712,12 +712,13 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 		return
 	}
 	if err := s.pages.ExecuteTemplate(w, "directory", map[string]any{
-		"PageTitle": cfg.Name,
-		"Name":      displayName,
-		"Items":     items,
-		"Crumbs":    crumbs,
-		"Protected": cfg.Protected,
-		"Locked":    cfg.Locked,
+		"PageTitle":   cfg.Name,
+		"Name":        displayName,
+		"Description": cfg.Description,
+		"Items":       items,
+		"Crumbs":      crumbs,
+		"Protected":   cfg.Protected,
+		"Locked":      cfg.Locked,
 	}); err != nil {
 		s.logger.Printf("render directory: %v", err)
 	}
