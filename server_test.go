@@ -402,6 +402,24 @@ func TestDirectoryMetadataIsPublicButSecretsNeverReachLogin(t *testing.T) {
 	}
 }
 
+func TestProtectedDirectoryRendersConfiguredDescriptionAfterAuthentication(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	appDir := s.apps[slug].Dir
+	if err := os.WriteFile(filepath.Join(appDir, ".env"), []byte("title='受保护目录标题'\ndescription='已配置的受保护目录说明'\npassword='"+protectedHash(t)+"'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w := request(t, s, http.MethodGet, appURL(slug, nil, true), nil, login(t, s, slug))
+	if w.Code != http.StatusOK {
+		t.Fatalf("directory status=%d body=%s", w.Code, w.Body.String())
+	}
+	for _, want := range []string{"受保护目录标题", "已配置的受保护目录说明"} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("authenticated directory page missing configured metadata %q", want)
+		}
+	}
+}
+
 func TestLoginDeepLinkRangeAndSessionInvalidation(t *testing.T) {
 	s, slug := makeTestServer(t, true)
 	cookie := login(t, s, slug)
