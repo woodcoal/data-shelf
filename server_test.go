@@ -636,7 +636,10 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 		`footer.hidden=!canZoom&&!hasNavigation`, `updateShareStatus`,
 		`openLink.textContent=trigger.dataset.openKind==="html-render"?"受控视图":"新窗口打开"`,
 		`.modal-foot[hidden] { display:none; }`, `.modal-head { flex-wrap:wrap; }`,
-		`node.textContent=message`, `prefers-reduced-motion`,
+		`node.textContent=message`, `function fitImage(){if(imageState.image){setZoom(1)}}`,
+		`image.addEventListener("load",fitImage)`, `prefers-reduced-motion`,
+		`.directory-preview-note { margin:16px 0 0;`, `justify-content:center`,
+		`.panel form { display:grid; gap:12px; }`, `.login-back { display:flex;`,
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("page script missing %q", want)
@@ -644,6 +647,9 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 	}
 	if strings.Contains(rendered, "innerHTML") {
 		t.Error("page scripts must not render untrusted content with innerHTML")
+	}
+	if strings.Contains(string(appJS), "</script>") || strings.Contains(string(appJS), "{{assetURL") {
+		t.Error("external JavaScript asset must not contain template or HTML markup")
 	}
 	if strings.Contains(rendered, `entry-link[data-preview-kind="image"]`) || strings.Contains(rendered, "function imageIndex()") {
 		t.Error("image navigation must consume server-provided neighbor capabilities, not infer a DOM image sequence")
