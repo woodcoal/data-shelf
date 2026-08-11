@@ -644,7 +644,7 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 		`node.textContent=message`, `function fitImage(){if(imageState.image){setZoom(1)}}`,
 		`image.addEventListener("load",fitImage)`, `prefers-reduced-motion`,
 		`.directory-preview-note { margin:16px 0 0;`, `justify-content:center`,
-		`.panel form { display:grid; gap:12px; }`, `.login-back { display:flex;`,
+		`.panel form { display:grid; gap:12px; }`, `.login-actions { display:grid; width:100%; justify-items:center; gap:12px; }`, `.login-back { display:flex;`,
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("page script missing %q", want)
@@ -690,6 +690,15 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 		if !strings.Contains(rendered, want) {
 			t.Errorf("preview action contract missing %q", want)
 		}
+	}
+	if strings.Contains(body.String(), `href="/guide.html" data-open-kind="html-render" data-preview-kind=`) {
+		t.Error("HTML file name must retain its default controlled-view navigation instead of becoming a preview trigger")
+	}
+	if !strings.Contains(body.String(), `href="/guide.html" data-open-kind="html-render">guide.html</a>`) {
+		t.Error("HTML file name must link to its controlled-view route without preview attributes")
+	}
+	if !strings.Contains(body.String(), `<button class="entry-action" type="button" data-open-kind="html-render" data-preview-kind="text"`) {
+		t.Error("HTML source preview must remain available from its dedicated action button")
 	}
 	if strings.Contains(rendered, "innerHTML") {
 		t.Error("template must not inject preview content with innerHTML")
