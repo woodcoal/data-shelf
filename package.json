@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "scripts": {
+    "test:ui": "playwright test web/e2e/ui-regression.spec.js --browser chromium --workers 1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}
