@@ -48,7 +48,7 @@ password='首次设置的密码'
 
 ## 内嵌界面
 
-首页、目录列表、密码页和空状态模板位于 `web/pages.tmpl`，在构建时通过 `go:embed` 编译进二进制，因此运行时无需部署静态资源。模板接收的文件名、应用名称和描述均由 Go 的 `html/template` 自动转义；路径仍由服务端按 URL 路径段编码和校验。
+首页、目录列表、密码页和空状态模板位于 `web/pages.tmpl`，交互脚本与样式分别位于 `web/assets/app.js`、`web/assets/app.css`；三者都在构建时通过 `go:embed` 编译进二进制，因此运行时无需部署静态资源。页面以带内容指纹的资源 URL 引用 JS/CSS，静态资源使用一年 immutable 缓存，页面仍为 `no-cache` 或受保护的 `private, no-store`。模板接收的文件名、应用名称和描述均由 Go 的 `html/template` 自动转义；路径仍由服务端按 URL 路径段编码和校验。
 
 后端为模板提供受控预览契约：`PreviewKind` 为 `none`、`image`、`pdf`、`text` 或 `markdown`，`OpenKind` 为 `directory`、`file`、`html-render` 或 `download`。URL、缩放、图片前后邻项和分享可用状态都由服务端生成；客户端不得按扩展名、DOM 或路径自行推断。分享状态只包含可用性、是否需要密码、过期时间和下载许可，绝不包含令牌、密码、哈希、管理 ID 或文件路径。
 
