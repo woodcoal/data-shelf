@@ -658,6 +658,7 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 		`footer.hidden=!canZoom&&!hasNavigation`, `updateShareStatus`,
 		`preview-share-actions`, `copyShareURL`, `new URL(shareURL,window.location.href)`,
 		`openLink.textContent=trigger.dataset.openKind==="html-render"?"受控视图":"新窗口打开"`,
+		`.modal-actions[hidden] { display:none; }`,
 		`.modal-foot[hidden] { display:none; }`, `.modal-head { flex-wrap:wrap; }`,
 		`node.textContent=message`, `function fitImage(){if(imageState.image){setZoom(1)}}`,
 		`image.addEventListener("load",fitImage)`, `prefers-reduced-motion`,
