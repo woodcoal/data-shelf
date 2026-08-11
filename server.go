@@ -40,7 +40,7 @@ type server struct {
 
 // directoryItem is the complete server-authored contract for the embedded
 // browser. It carries only generated URLs and never local paths or share
-// credentials.
+// credentials, except for an authorized ShareURL capability.
 type directoryItem struct {
 	Name, URL, Kind, Size, Modified                      string
 	PreviewKind, OpenKind, OpenMode, PreviewURL, OpenURL string
@@ -55,12 +55,15 @@ type imageNavigation struct {
 	CanZoom                                bool
 }
 
-// shareStatus intentionally contains no token, password, path, or share ID.
+// shareStatus exposes no independent token, password, path, or share ID.
+// ShareURL is a complete, authorized capability URL and is set only for a
+// currently available share while rendering an already authorized directory.
 type shareStatus struct {
 	State            string
 	RequiresPassword bool
 	ExpiresAt        string
 	CanDownload      bool
+	ShareURL         string
 }
 
 func newServer(root, title string, logger *log.Logger) (*server, error) {

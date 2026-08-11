@@ -634,6 +634,7 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 		`hasNavigation=canNavigate&&!!(previousTarget||nextTarget)`,
 		`previous.hidden=!previousTarget`, `next.hidden=!nextTarget`,
 		`footer.hidden=!canZoom&&!hasNavigation`, `updateShareStatus`,
+		`preview-share-actions`, `copyShareURL`, `new URL(shareURL,window.location.href)`,
 		`openLink.textContent=trigger.dataset.openKind==="html-render"?"受控视图":"新窗口打开"`,
 		`.modal-foot[hidden] { display:none; }`, `.modal-head { flex-wrap:wrap; }`,
 		`node.textContent=message`, `function fitImage(){if(imageState.image){setZoom(1)}}`,
@@ -666,7 +667,7 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 		"Items": []directoryItem{{
 			Name: "guide.html", URL: "/guide.html", PreviewKind: "text", OpenKind: "html-render", OpenMode: "modal",
 			PreviewURL: "/_preview/docs/guide.html", OpenURL: "/docs/_html/guide.html", DownloadURL: "/docs/_download/guide.html",
-			Share: shareStatus{State: "available", RequiresPassword: true, ExpiresAt: "2026-08-11T00:00:00Z", CanDownload: false},
+			Share: shareStatus{State: "available", RequiresPassword: true, ExpiresAt: "2026-08-11T00:00:00Z", CanDownload: false, ShareURL: "/_s/capability-token/"},
 		}},
 	})
 	if err != nil {
@@ -679,7 +680,7 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 		`data-download-url="/docs/_download/`,
 		`HTML 源码预览`, `>预览源码</button>`,
 		`openLink.textContent=trigger.dataset.openKind==="html-render"?"受控视图":"新窗口打开"`,
-		`data-share-state="available"`, `preview-share-status`, `已配置分享`,
+		`data-share-state="available"`, `data-share-url="/_s/capability-token/"`, `preview-share-status`, `preview-share-open`, `preview-share-copy`, `已配置分享`,
 		`allow-popups allow-popups-to-escape-sandbox`,
 	} {
 		if !strings.Contains(rendered, want) {
@@ -741,6 +742,13 @@ func TestDirectoryPublishesOnlyServerAuthoredPreviewAndShareCapabilities(t *test
 	if err := os.WriteFile(filepath.Join(appDir, ".env"), []byte(env), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	unauthorized := request(t, s, http.MethodGet, appURL(slug, nil, true), nil)
+	if unauthorized.Code != http.StatusSeeOther {
+		t.Fatalf("unauthorized directory status=%d", unauthorized.Code)
+	}
+	if strings.Contains(unauthorized.Body.String(), token) {
+		t.Error("unauthorized directory response leaked a share capability")
+	}
 	w := request(t, s, http.MethodGet, appURL(slug, nil, true), nil, login(t, s, slug))
 	if w.Code != http.StatusOK {
 		t.Fatalf("directory status=%d body=%s", w.Code, w.Body.String())
@@ -749,7 +757,7 @@ func TestDirectoryPublishesOnlyServerAuthoredPreviewAndShareCapabilities(t *test
 	for _, want := range []string{
 		`data-open-kind="html-render"`, `data-can-navigate-images="true"`,
 		`data-next-image-name="b.jpg"`, `data-previous-image-name="a.png"`,
-		`data-share-state="available"`, `data-share-requires-password="true"`,
+		`data-share-state="available"`, `data-share-requires-password="true"`, `data-share-url="/_s/` + token + `/"`,
 		`/` + url.PathEscape(slug) + `/_html/page.html`,
 		`/` + url.PathEscape(slug) + `/_preview/a.png`,
 	} {
@@ -757,8 +765,32 @@ func TestDirectoryPublishesOnlyServerAuthoredPreviewAndShareCapabilities(t *test
 			t.Errorf("directory capability missing %q", want)
 		}
 	}
-	if strings.Contains(body, token) || strings.Contains(body, protectedHash(t)) || strings.Contains(body, "SHARE_DOC") {
-		t.Error("directory response leaked a share credential or management identifier")
+	if strings.Contains(body, protectedHash(t)) || strings.Contains(body, "SHARE_DOC") {
+		t.Error("directory response leaked a share secret or management identifier")
+	}
+}
+
+func TestDirectoryDoesNotPublishExpiredShareURL(t *testing.T) {
+	s, slug := makeTestServer(t, false)
+	appDir := s.apps[slug].Dir
+	if err := os.WriteFile(filepath.Join(appDir, "report.pdf"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	token := strings.Repeat("A", 43) // 32 zero bytes, canonical Raw Base64URL.
+	env := fmt.Sprintf("SHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='report.pdf'\nSHARE_DOC_TOKEN='%s'\nSHARE_DOC_EXPIRES_AT='%s'\nSHARE_DOC_PASSWORD='%s'\nSHARE_DOC_ALLOW_DOWNLOAD='true'\n", token, time.Now().Add(-time.Hour).Format(time.RFC3339), protectedHash(t))
+	if err := os.WriteFile(filepath.Join(appDir, ".env"), []byte(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := request(t, s, http.MethodGet, appURL(slug, nil, true), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expired-share directory status=%d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `data-share-state="expired"`) {
+		t.Errorf("expired share state missing: %s", body)
+	}
+	if strings.Contains(body, token) || strings.Contains(body, `data-share-url=`) {
+		t.Error("expired share leaked a capability URL")
 	}
 }
 
