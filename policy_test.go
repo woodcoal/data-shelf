@@ -69,16 +69,24 @@ func TestHTMLAndShareStayInTheirOwnAuthorizationBoundaries(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(appDir, "report.html"), []byte("<script>parent.postMessage(document.cookie,'*')</script><form action=https://bad.invalid><input></form>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(appDir, "notes.md"), []byte("# 分享笔记\n\n可安全阅读。\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		t.Fatal(err)
 	}
 	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
+	markdownTokenBytes := make([]byte, 32)
+	if _, err := rand.Read(markdownTokenBytes); err != nil {
+		t.Fatal(err)
+	}
+	markdownToken := base64.RawURLEncoding.EncodeToString(markdownTokenBytes)
 	passwordHash, err := hashPassword("分享密码123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := "title='文档'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='report.html'\nSHARE_DOC_TOKEN='" + token + "'\nSHARE_DOC_EXPIRES_AT='2026-08-20T12:00:00+08:00'\nSHARE_DOC_PASSWORD='" + passwordHash + "'\nSHARE_DOC_ALLOW_DOWNLOAD='false'\n"
+	env := "title='文档'\nSHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='report.html'\nSHARE_DOC_TOKEN='" + token + "'\nSHARE_DOC_EXPIRES_AT='2026-08-20T12:00:00+08:00'\nSHARE_DOC_PASSWORD='" + passwordHash + "'\nSHARE_DOC_ALLOW_DOWNLOAD='false'\nSHARE_NOTES_ENABLED='true'\nSHARE_NOTES_SCOPE='file'\nSHARE_NOTES_PATH='notes.md'\nSHARE_NOTES_TOKEN='" + markdownToken + "'\nSHARE_NOTES_EXPIRES_AT='2026-08-20T12:00:00+08:00'\nSHARE_NOTES_PASSWORD='" + passwordHash + "'\nSHARE_NOTES_ALLOW_DOWNLOAD='false'\n"
 	if err := os.WriteFile(filepath.Join(appDir, ".env"), []byte(env), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +135,28 @@ func TestHTMLAndShareStayInTheirOwnAuthorizationBoundaries(t *testing.T) {
 	w = request(t, s, http.MethodGet, appResourceURL("docs", "_preview", []string{"report.html"}), nil, cookies[0])
 	if w.Code != http.StatusOK {
 		t.Fatalf("share cookie should not be an application session: %d", w.Code)
+	}
+
+	markdownGate := "/_s/" + markdownToken + "/"
+	w = request(t, s, http.MethodGet, markdownGate, nil)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "notes.md") {
+		t.Fatalf("markdown share gate leaked metadata: %d %q", w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodPost, "/_s/"+markdownToken+"/_auth", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.RemoteAddr = "127.0.0.1:12345"
+	w = httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/_s/"+markdownToken+"/_preview" {
+		t.Fatalf("markdown share authentication status=%d location=%q", w.Code, w.Header().Get("Location"))
+	}
+	markdownCookies := w.Result().Cookies()
+	if len(markdownCookies) != 1 || markdownCookies[0].Path != markdownGate {
+		t.Fatalf("markdown share cookie scope=%+v", markdownCookies)
+	}
+	w = request(t, s, http.MethodGet, "/_s/"+markdownToken+"/_preview", nil, markdownCookies[0])
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "分享笔记") {
+		t.Fatalf("markdown share preview=%d body=%q", w.Code, w.Body.String())
 	}
 	if time.Now().After(time.Date(2026, 8, 20, 4, 0, 0, 0, time.UTC)) {
 		t.Fatal("test fixture expiry must remain future")

@@ -226,16 +226,14 @@ func sharesFromEnv(app *application, owner string, policy directoryPolicy) ([]sh
 	groups := map[string]map[string]string{}
 	counts := map[string]map[string]int{}
 	for key, value := range e.doc.values {
-		if !strings.HasPrefix(key, "SHARE_") {
+		parsed := parseShareKey(key)
+		if parsed == (shareKey{}) {
 			continue
 		}
-		rest := strings.TrimPrefix(key, "SHARE_")
-		at := strings.Index(rest, "_")
-		id, field := rest[:at], rest[at+1:]
-		if groups[id] == nil {
-			groups[id], counts[id] = map[string]string{}, map[string]int{}
+		if groups[parsed.id] == nil {
+			groups[parsed.id], counts[parsed.id] = map[string]string{}, map[string]int{}
 		}
-		groups[id][field], counts[id][field] = value, e.doc.keyCount[key]
+		groups[parsed.id][parsed.field], counts[parsed.id][parsed.field] = value, e.doc.keyCount[key]
 	}
 	var result []shareDefinition
 	for id, values := range groups {
