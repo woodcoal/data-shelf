@@ -4,6 +4,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +75,95 @@ func TestDirectoryPolicyInheritsOptionsAndMigratesDirectPasswords(t *testing.T) 
 		if err != nil || !strings.Contains(string(raw), "password='hash:") || strings.Contains(string(raw), "plain:") {
 			t.Fatalf("direct password was not migrated at %s: %q (%v)", path, raw, err)
 		}
+	}
+}
+
+func TestInheritedPolicySessionCrossesEmptyDirectoriesAndInvalidatesForSecurityChanges(t *testing.T) {
+	root := t.TempDir()
+	appDir := filepath.Join(root, "docs")
+	deepDir := filepath.Join(appDir, "nested", "leaf")
+	if err := os.MkdirAll(deepDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rootPassword := protectedHash(t)
+	childPassword, err := hashPassword("子目录密码123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedPassword, err := hashPassword("轮换后的密码123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("password='"+rootPassword+"'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, ".env"), []byte("title='文档'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := newServer(root, "资料架", log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deepURL := appURL("docs", []string{"nested", "leaf"}, true)
+	loginAt := func(password string) *http.Cookie {
+		t.Helper()
+		form := url.Values{"password": {password}, "return": {deepURL}}
+		r := httptest.NewRequest(http.MethodPost, appResourceURL("docs", "_auth", nil)+"?return="+url.QueryEscape(deepURL), strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.RemoteAddr = "127.0.0.1:43210"
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, r)
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != deepURL {
+			t.Fatalf("login status=%d location=%q", w.Code, w.Header().Get("Location"))
+		}
+		cookies := w.Result().Cookies()
+		if len(cookies) != 1 || cookies[0].Path != appURL("docs", nil, true) {
+			t.Fatalf("login cookies=%+v", cookies)
+		}
+		return cookies[0]
+	}
+	assertStatus := func(cookie *http.Cookie, want int, label string) {
+		t.Helper()
+		w := request(t, s, http.MethodGet, deepURL, nil, cookie)
+		if w.Code != want {
+			t.Fatalf("%s status=%d want=%d location=%q", label, w.Code, want, w.Header().Get("Location"))
+		}
+	}
+
+	// The root password is inherited through both empty directory levels.
+	rootCookie := loginAt("测试密码123")
+	assertStatus(rootCookie, http.StatusOK, "root session through empty directories")
+
+	childEnv := filepath.Join(appDir, "nested", ".env")
+	if err := os.WriteFile(childEnv, []byte("password='"+childPassword+"'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertStatus(rootCookie, http.StatusSeeOther, "old session after child password added")
+	childCookie := loginAt("子目录密码123")
+	assertStatus(childCookie, http.StatusOK, "child password session")
+
+	if err := os.WriteFile(childEnv, []byte("password='"+rotatedPassword+"'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertStatus(childCookie, http.StatusSeeOther, "old session after child password changed")
+	rotatedCookie := loginAt("轮换后的密码123")
+	assertStatus(rotatedCookie, http.StatusOK, "rotated child password session")
+
+	if err := os.Remove(childEnv); err != nil {
+		t.Fatal(err)
+	}
+	assertStatus(rotatedCookie, http.StatusSeeOther, "old session after child password removed")
+	rootCookie = loginAt("测试密码123")
+	assertStatus(rootCookie, http.StatusOK, "root session after child password removed")
+
+	if err := os.WriteFile(childEnv, []byte("html_scripts='deny'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertStatus(rootCookie, http.StatusSeeOther, "old session after HTML policy changed")
+	rootCookie = loginAt("测试密码123")
+	assertStatus(rootCookie, http.StatusOK, "session reauthenticated for HTML policy")
+	if policy := s.resolveDirectoryPolicy(s.apps["docs"], []string{"nested", "leaf"}); policy.HTMLScriptsAllowed {
+		t.Fatalf("HTML policy was not inherited: %+v", policy)
 	}
 }
 

@@ -415,7 +415,11 @@ func TestLoginDeepLinkRangeAndSessionInvalidation(t *testing.T) {
 	}
 	app := s.apps[slug]
 	envPath := filepath.Join(app.Dir, ".env")
-	changed := fmt.Sprintf("NAME='已改密码'\nPASSWORD='%s'\n", protectedHash(t))
+	changedPassword, err := hashPassword("改后测试密码123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := fmt.Sprintf("NAME='已改密码'\nPASSWORD='%s'\n", changedPassword)
 	if err := os.WriteFile(envPath, []byte(changed), 0o600); err != nil {
 		t.Fatal(err)
 	}
