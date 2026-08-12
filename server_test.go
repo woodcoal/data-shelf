@@ -1016,3 +1016,18 @@ func TestRootPasswordInvalidatesOnlyPublicApplicationSessions(t *testing.T) {
 		t.Fatalf("private session was affected: %d", w.Code)
 	}
 }
+
+func TestUnknownShareLookupsAreRateLimitedBeforeDiscovery(t *testing.T) {
+	s, _ := makeTestServer(t, false)
+	unknown := "/_s/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/"
+	for attempt := 0; attempt < 5; attempt++ {
+		w := request(t, s, http.MethodGet, unknown, nil)
+		if w.Code != http.StatusNotFound || w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("attempt %d status=%d cache=%q", attempt+1, w.Code, w.Header().Get("Cache-Control"))
+		}
+	}
+	w := request(t, s, http.MethodGet, unknown, nil)
+	if w.Code != http.StatusTooManyRequests || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("rate-limited status=%d cache=%q", w.Code, w.Header().Get("Cache-Control"))
+	}
+}
