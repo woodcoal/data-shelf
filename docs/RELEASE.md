@@ -2,6 +2,8 @@
 
 DataShelf 是单一 Go 二进制。页面模板编译在程序内的 `pageTemplates` 常量中，发布包不需要额外模板、静态目录、DLL 或 `.so`。依赖版本由 `go.mod` 和 `go.sum` 固定，构建脚本使用 `-mod=readonly`，发现依赖漂移会直接失败。
 
+正式版本唯一来源是仓库根目录的 `VERSION` 文件。发布标签必须使用 `v<VERSION>`，例如当前版本 `VERSION` 为 `1.26.812` 时使用 `v1.26.812`；构建脚本会拒绝版本格式错误或标签与文件不一致的发布。
+
 ### 从干净 checkout 构建
 
 要求 Go 1.25 或更高版本，以及 Bash。Linux/macOS 机器可直接执行：
@@ -27,9 +29,11 @@ dist/SHA256SUMS
 GitHub Actions 在每次 push/PR 上运行相同脚本并保存构建产物；推送 `v*` 标签会创建 GitHub Release：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag "v$(tr -d '[:space:]' < VERSION)"
+git push origin "v$(tr -d '[:space:]' < VERSION)"
 ```
+
+构建产物内置同一版本号，可通过 `datashelf-linux-amd64 -version` 查询。
 
 发布流程只使用 GitHub Actions 内置令牌，不把密钥或配置写入仓库。发布前可在下载端校验：
 

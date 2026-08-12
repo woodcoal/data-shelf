@@ -5,8 +5,25 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 DIST_DIR=${DIST_DIR:-"$ROOT_DIR/dist"}
 GO_BIN=${GO_BIN:-go}
+VERSION_FILE="$ROOT_DIR/VERSION"
 
 cd "$ROOT_DIR"
+
+if [[ ! -f "$VERSION_FILE" ]]; then
+  echo "VERSION file is required" >&2
+  exit 1
+fi
+
+RELEASE_VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
+if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "VERSION must contain a numeric semantic version; found: $RELEASE_VERSION" >&2
+  exit 1
+fi
+
+if [[ -n "${GITHUB_REF_NAME:-}" && "$GITHUB_REF_NAME" == v* && "${GITHUB_REF_NAME#v}" != "$RELEASE_VERSION" ]]; then
+  echo "Git tag $GITHUB_REF_NAME does not match VERSION $RELEASE_VERSION" >&2
+  exit 1
+fi
 
 if ! command -v "$GO_BIN" >/dev/null 2>&1; then
   echo "Go 1.25 or newer is required" >&2
@@ -46,7 +63,7 @@ build_target() {
 
   echo "Building $output ($goos/$goarch)"
   GOOS="$goos" GOARCH="$goarch" "$GO_BIN" build \
-    -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
+    -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X main.buildVersion=$RELEASE_VERSION" \
     -o "$DIST_DIR/$output" .
 }
 
@@ -97,5 +114,5 @@ else
   (cd "$DIST_DIR" && shasum -a 256 datashelf-* > SHA256SUMS)
 fi
 
-echo "Release artifacts written to $DIST_DIR"
+echo "DataShelf $RELEASE_VERSION release artifacts written to $DIST_DIR"
 ls -lh "$DIST_DIR"
