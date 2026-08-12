@@ -33,6 +33,7 @@ func run() error {
 	host := flag.String("host", "127.0.0.1", "监听地址")
 	port := flag.Int("port", 9090, "监听端口（1-65535）")
 	title := flag.String("title", "", "资料架标题（优先级高于根 .env 的 NAME）")
+	showVersion := flag.Bool("version", false, "显示 DataShelf 版本")
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), "DataShelf：只读本地资料架服务")
 		fmt.Fprintln(flag.CommandLine.Output(), "\n用法：")
@@ -48,6 +49,10 @@ func run() error {
 		fmt.Fprintln(flag.CommandLine.Output(), "  对局域网访问请在 HTTPS 反向代理后使用，密码和资料内容不会通过 HTTP 明文保护。")
 	}
 	flag.Parse()
+	if *showVersion {
+		fmt.Fprintln(flag.CommandLine.Output(), buildVersion)
+		return nil
+	}
 	if *port < 1 || *port > 65535 {
 		return errors.New("port must be between 1 and 65535")
 	}
