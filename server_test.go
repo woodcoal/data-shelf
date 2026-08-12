@@ -625,6 +625,7 @@ func TestPagesUseExploreTopbarAndSafeDirectoryContext(t *testing.T) {
 	pageAndAssets := rendered + string(appCSS) + string(appJS)
 	for _, want := range []string{
 		`class="topbar"`, `class="brand" href="/"`, `class="appearance-toggle"`,
+		`class="skip-link" href="#content">跳到主要内容</a>`, `id="content" tabindex="-1"`,
 		`aria-label="显示偏好"`, `width:40px`, `height:40px`,
 		`data-accent="azure"`, `data-accent="forest"`, `data-accent="terracotta"`,
 		`data-theme="system"`, `data-theme="light"`, `data-theme="dark"`,
@@ -657,6 +658,7 @@ func TestAppearanceAndPreviewScriptsKeepCapabilityAndFocusBoundaries(t *testing.
 		`previous.hidden=!previousTarget`, `next.hidden=!nextTarget`,
 		`footer.hidden=!canZoom&&!hasNavigation`, `updateShareStatus`,
 		`preview-share-actions`, `copyShareURL`, `new URL(shareURL,window.location.href)`,
+		`preview-copy-status`, `role="status"`, `分享链接已复制。`,
 		`openLink.textContent=trigger.dataset.openKind==="html-render"?"受控视图":"新窗口打开"`,
 		`.modal-actions[hidden] { display:none; }`,
 		`.modal-foot[hidden] { display:none; }`, `.modal-head { flex-wrap:wrap; }`,

@@ -1,5 +1,5 @@
 const { test, expect } = require("@playwright/test");
-const { mkdtemp, mkdir, rm, writeFile } = require("node:fs/promises");
+const { mkdtemp, mkdir, readFile, rm, writeFile } = require("node:fs/promises");
 const { once } = require("node:events");
 const http = require("node:http");
 const net = require("node:net");
@@ -59,7 +59,8 @@ test.beforeAll(async () => {
   dataRoot = await mkdtemp(path.join(os.tmpdir(), "datashelf-ui-"));
   const docs = path.join(dataRoot, "docs");
   await mkdir(docs);
-  await writeFile(path.join(docs, ".env"), "title='浏览器断言资料'\npassword='plain:浏览器断言密码123'\nSHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='page.html'\nSHARE_DOC_TOKEN='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'\nSHARE_DOC_EXPIRES_AT='2000-01-01T00:00:00Z'\nSHARE_DOC_PASSWORD='plain:浏览器断言密码123'\n");
+  const shareExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  await writeFile(path.join(docs, ".env"), "title='浏览器断言资料'\npassword='plain:浏览器断言密码123'\nSHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='page.html'\nSHARE_DOC_TOKEN='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'\nSHARE_DOC_EXPIRES_AT='" + shareExpiresAt + "'\nSHARE_DOC_PASSWORD='plain:浏览器断言密码123'\nSHARE_DOC_ALLOW_DOWNLOAD='true'\n");
   await writeFile(path.join(docs, "page.html"), "<!doctype html><h1>受控 HTML</h1>");
   const port = await reservePort();
   baseURL = "http://127.0.0.1:" + port;
@@ -113,10 +114,29 @@ test("HTML 文件名进入受控视图，源码按钮保留弹窗预览", async 
   await expect(page.locator("#preview-kind-label")).toHaveText("HTML 源码预览");
 });
 
-test("过期分享不会显示无效分享操作", async ({ page }) => {
+test("可用分享链接复制后会向辅助技术宣布结果", async ({ page }) => {
   await signIn(page);
+  const configPath = path.join(dataRoot, "docs", ".env");
+  const config = await readFile(configPath, "utf8");
+  const passwordHash = config.match(/^password='(hash:[^']+)'$/m);
+  expect(passwordHash).not.toBeNull();
+  await writeFile(configPath, config.replace("SHARE_DOC_PASSWORD='plain:浏览器断言密码123'", "SHARE_DOC_PASSWORD='" + passwordHash[1] + "'"));
+  await page.reload();
   await page.getByRole("button", { name: "预览源码" }).click();
-  await expect(page.locator("#preview-share-actions")).toBeHidden();
-  await expect(page.getByRole("link", { name: "打开分享" })).toBeHidden();
-  await expect(page.getByRole("button", { name: "复制链接" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "复制链接" })).toBeVisible();
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: () => Promise.resolve() },
+  }));
+  await page.getByRole("button", { name: "复制链接" }).click();
+  await expect(page.getByRole("status")).toHaveText("分享链接已复制。");
+});
+
+test("键盘提供跳到主要内容入口", async ({ page }) => {
+  await page.goto(baseURL + "/");
+  await page.keyboard.press("Tab");
+  const skipLink = page.getByRole("link", { name: "跳到主要内容" });
+  await expect(skipLink).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#content")).toBeFocused();
 });
