@@ -34,8 +34,11 @@ type server struct {
 	apps     map[string]*application
 	sessions *sessionManager
 	limiter  *loginLimiter
-	logger   *log.Logger
-	pages    *template.Template
+	// shareLookupLimiter protects the public capability endpoint before an
+	// unknown token can trigger a full on-disk share discovery walk.
+	shareLookupLimiter *loginLimiter
+	logger             *log.Logger
+	pages              *template.Template
 }
 
 // directoryItem is the complete server-authored contract for the embedded
@@ -92,7 +95,7 @@ func newServerWithConfig(root, title string, global globalConfig, logger *log.Lo
 	}
 	s := &server{
 		root: absoluteRoot, title: title, global: global, apps: make(map[string]*application),
-		sessions: sessions, limiter: newLoginLimiter(), logger: logger, pages: pages,
+		sessions: sessions, limiter: newLoginLimiter(), shareLookupLimiter: newLoginLimiter(), logger: logger, pages: pages,
 	}
 	if err := s.scanApps(); err != nil {
 		return nil, err
@@ -1046,12 +1049,21 @@ func (s *server) share(w http.ResponseWriter, r *http.Request, segments []string
 		http.NotFound(w, r)
 		return
 	}
+	const lookupKey = "share-lookup"
+	source := sourceIP(r)
+	if s.shareLookupLimiter.blocked(lookupKey, source) {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "尝试次数过多，请稍后再试", http.StatusTooManyRequests)
+		return
+	}
 	share, ok := s.findShare(segments[0])
 	if !ok || time.Now().After(share.Expires) {
+		s.shareLookupLimiter.allowed(lookupKey, source)
 		w.Header().Set("Cache-Control", "no-store")
 		http.NotFound(w, r)
 		return
 	}
+	s.shareLookupLimiter.reset(lookupKey, source)
 	token := segments[0]
 	if len(segments) == 1 || segments[1] == "" {
 		s.shareGate(w, r, share, token)

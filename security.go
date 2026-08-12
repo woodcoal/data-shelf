@@ -212,6 +212,24 @@ func (l *loginLimiter) allowed(app, source string) bool {
 	return true
 }
 
+// blocked performs the cheap half of rate limiting before a request starts a
+// potentially expensive operation. It uses the same rolling window as allowed
+// and drops expired state while checking it.
+func (l *loginLimiter) blocked(app, source string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	key := attemptKey{app, source}
+	entry, ok := l.entries[key]
+	if !ok {
+		return false
+	}
+	if l.now().Sub(entry.start) >= 5*time.Minute {
+		delete(l.entries, key)
+		return false
+	}
+	return entry.count >= 5
+}
+
 func (l *loginLimiter) reset(app, source string) {
 	l.mu.Lock()
 	delete(l.entries, attemptKey{app, source})
