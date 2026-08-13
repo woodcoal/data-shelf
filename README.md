@@ -1,6 +1,10 @@
 # DataShelf
 
-DataShelf 是一个只读的本地资料架服务。数据根目录下每个第一层普通目录会成为一个独立应用；规范访问地址为 `/<应用目录名>/`。应用可公开访问，也可通过其私有 `.env` 设置名称、说明和密码。
+DataShelf 是一个让本地资料可被远程安全访问与分享的只读资料架服务。管理员指定数据根目录并运行服务后，根目录下每个第一层普通目录都会成为一个可在浏览器打开的独立资料应用，规范访问地址为 `/<应用目录名>/`。
+
+它适合将仍由本地磁盘管理的资料通过受控地址提供给远程浏览器查看：目录和文件可沿用已有的密码边界与分享机制对外开放；只读、按应用隔离的密码和受控 HTML 渲染是这一使用方式的安全约束，而非产品目的本身。
+
+Agent 生成的独立 HTML 也可直接放入资料目录，通过 DataShelf 地址持续访问。即使 Agent 为生成结果启动的临时服务已停止，HTML 文件仍作为资料目录中的内容保留，并可按现有授权规则打开或分享。
 
 ## 启动
 
@@ -65,7 +69,7 @@ go test ./...
 CGO_ENABLED=0 go build -trimpath -o datashelf .
 ```
 
-如需局域网访问，请显式设置 `-host 0.0.0.0`，并在生产环境前置 HTTPS 反向代理。
+如需从其他设备或远程浏览器访问，请显式设置合适的 `-host`，并在生产环境前置 HTTPS 反向代理。非 loopback 监听会输出无 TLS 风险警告；请只通过受控网络地址暴露服务。
 
 跨平台构建、校验、systemd/launchd/Windows 常驻运行和卸载说明见
 [`docs/RELEASE.md`](docs/RELEASE.md)。运行 `./scripts/build-release.sh` 会在
@@ -76,3 +80,7 @@ CGO_ENABLED=0 go build -trimpath -o datashelf .
 
 文件动态发现、`.env` 继承与密码迁移、HTML/分享渲染、静态资源缓存及
 前后端能力边界见 [`docs/PREVIEW-CONFIG-CONTRACT.md`](docs/PREVIEW-CONFIG-CONTRACT.md)。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。
