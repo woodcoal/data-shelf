@@ -2,7 +2,7 @@
 
 DataShelf 是单一 Go 二进制。页面模板编译在程序内的 `pageTemplates` 常量中，发布包不需要额外模板、静态目录、DLL 或 `.so`。依赖版本由 `go.mod` 和 `go.sum` 固定，构建脚本使用 `-mod=readonly`，发现依赖漂移会直接失败。
 
-正式版本唯一来源是仓库根目录的 `VERSION` 文件。发布标签必须使用 `v<VERSION>`，例如当前版本 `VERSION` 为 `1.26.812` 时使用 `v1.26.812`；构建脚本会拒绝版本格式错误或标签与文件不一致的发布。
+正式版本唯一来源是仓库根目录的 `VERSION` 文件。发布标签必须使用 `v<VERSION>`，当前版本使用 `v1.26.813`；构建脚本会拒绝版本格式错误或标签与文件不一致的发布。产物和校验清单文件名也会带上同一个版本标签。
 
 ### 从干净 checkout 构建
 
@@ -17,11 +17,11 @@ cd data-shelf
 脚本会依次下载并校验模块、以 `CGO_ENABLED=0` 运行测试、交叉编译并检查四个产物：
 
 ```text
-dist/datashelf-linux-amd64
-dist/datashelf-darwin-amd64
-dist/datashelf-darwin-arm64
-dist/datashelf-windows-amd64.exe
-dist/SHA256SUMS
+dist/datashelf-v1.26.813-linux-amd64
+dist/datashelf-v1.26.813-darwin-amd64
+dist/datashelf-v1.26.813-darwin-arm64
+dist/datashelf-v1.26.813-windows-amd64.exe
+dist/SHA256SUMS-v1.26.813
 ```
 
 构建参数包含 `-trimpath`、`-buildvcs=false` 和空 Build ID，避免把本地路径、Git 状态或构建机标识写进产物。Linux 产物必须是静态 ELF；所有目标都关闭 CGO，因此不依赖第三方运行时 DLL/`.so`。macOS 仍会使用操作系统提供的系统库，这是平台本身的运行时，不需要额外安装运行库。
@@ -33,12 +33,12 @@ git tag "v$(tr -d '[:space:]' < VERSION)"
 git push origin "v$(tr -d '[:space:]' < VERSION)"
 ```
 
-构建产物内置同一版本号，可通过 `datashelf-linux-amd64 -version` 查询。
+构建产物内置同一版本号，可通过 `datashelf-v1.26.813-linux-amd64 -version` 查询。
 
 发布流程只使用 GitHub Actions 内置令牌，不把密钥或配置写入仓库。发布前可在下载端校验：
 
 ```bash
-sha256sum -c SHA256SUMS
+sha256sum -c SHA256SUMS-v1.26.813
 ```
 
 ### 运行约定与风险
@@ -81,7 +81,7 @@ server {
 
 ```bash
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/Documents/data"
-install -m 0755 dist/datashelf-linux-amd64 "$HOME/.local/bin/datashelf-linux-amd64"
+install -m 0755 dist/datashelf-v1.26.813-linux-amd64 "$HOME/.local/bin/datashelf-linux-amd64"
 install -m 0644 deploy/systemd/datashelf.service "$HOME/.config/systemd/user/datashelf.service"
 systemctl --user daemon-reload
 systemctl --user enable --now datashelf.service
@@ -111,7 +111,7 @@ systemctl --user daemon-reload
 
 ```bash
 mkdir -p "$HOME/.local/bin" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/DataShelf" "$HOME/Documents/data"
-install -m 0755 dist/datashelf-darwin-arm64 "$HOME/.local/bin/datashelf-darwin-arm64"
+install -m 0755 dist/datashelf-v1.26.813-darwin-arm64 "$HOME/.local/bin/datashelf-darwin-arm64"
 sed "s|__DATASHELF_HOME__|$HOME|g" \
   deploy/macos/cn.woodcoal.datashelf.plist.template \
   > "$HOME/Library/LaunchAgents/cn.woodcoal.datashelf.plist"
@@ -139,7 +139,7 @@ PowerShell 脚本使用系统自带的 Windows PowerShell，不需要 NSSM、DLL
 ```powershell
 $install = Join-Path $env:LOCALAPPDATA 'DataShelf'
 New-Item -ItemType Directory -Force $install | Out-Null
-Copy-Item .\dist\datashelf-windows-amd64.exe $install
+Copy-Item .\dist\datashelf-v1.26.813-windows-amd64.exe (Join-Path $install 'datashelf-windows-amd64.exe')
 Copy-Item .\deploy\windows\datashelf-run.ps1 $install
 & .\deploy\windows\install-task.ps1 -InstallDir $install -Binary (Join-Path $install 'datashelf-windows-amd64.exe') -RunnerScript (Join-Path $install 'datashelf-run.ps1')
 ```
