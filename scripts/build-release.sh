@@ -20,6 +20,14 @@ if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
+RELEASE_TAG="v$RELEASE_VERSION"
+ARTIFACT_PREFIX="datashelf-$RELEASE_TAG"
+CHECKSUMS_FILE="SHA256SUMS-$RELEASE_TAG"
+LINUX_AMD64_ARTIFACT="$ARTIFACT_PREFIX-linux-amd64"
+DARWIN_AMD64_ARTIFACT="$ARTIFACT_PREFIX-darwin-amd64"
+DARWIN_ARM64_ARTIFACT="$ARTIFACT_PREFIX-darwin-arm64"
+WINDOWS_AMD64_ARTIFACT="$ARTIFACT_PREFIX-windows-amd64.exe"
+
 if [[ -n "${GITHUB_REF_NAME:-}" && "$GITHUB_REF_NAME" == v* && "${GITHUB_REF_NAME#v}" != "$RELEASE_VERSION" ]]; then
   echo "Git tag $GITHUB_REF_NAME does not match VERSION $RELEASE_VERSION" >&2
   exit 1
@@ -50,11 +58,11 @@ echo "Running tests with CGO_ENABLED=0"
 
 mkdir -p "$DIST_DIR"
 rm -f \
-  "$DIST_DIR/datashelf-linux-amd64" \
-  "$DIST_DIR/datashelf-darwin-amd64" \
-  "$DIST_DIR/datashelf-darwin-arm64" \
-  "$DIST_DIR/datashelf-windows-amd64.exe" \
-  "$DIST_DIR/SHA256SUMS"
+  "$DIST_DIR/$LINUX_AMD64_ARTIFACT" \
+  "$DIST_DIR/$DARWIN_AMD64_ARTIFACT" \
+  "$DIST_DIR/$DARWIN_ARM64_ARTIFACT" \
+  "$DIST_DIR/$WINDOWS_AMD64_ARTIFACT" \
+  "$DIST_DIR/$CHECKSUMS_FILE"
 
 build_target() {
   local goos=$1
@@ -67,10 +75,10 @@ build_target() {
     -o "$DIST_DIR/$output" .
 }
 
-build_target linux amd64 datashelf-linux-amd64
-build_target darwin amd64 datashelf-darwin-amd64
-build_target darwin arm64 datashelf-darwin-arm64
-build_target windows amd64 datashelf-windows-amd64.exe
+build_target linux amd64 "$LINUX_AMD64_ARTIFACT"
+build_target darwin amd64 "$DARWIN_AMD64_ARTIFACT"
+build_target darwin arm64 "$DARWIN_ARM64_ARTIFACT"
+build_target windows amd64 "$WINDOWS_AMD64_ARTIFACT"
 
 check_artifact() {
   local artifact=$1
@@ -95,23 +103,31 @@ check_artifact() {
   fi
 }
 
-check_artifact datashelf-linux-amd64 linux
-check_artifact datashelf-darwin-amd64 darwin
-check_artifact datashelf-darwin-arm64 darwin
-check_artifact datashelf-windows-amd64.exe windows
+check_artifact "$LINUX_AMD64_ARTIFACT" linux
+check_artifact "$DARWIN_AMD64_ARTIFACT" darwin
+check_artifact "$DARWIN_ARM64_ARTIFACT" darwin
+check_artifact "$WINDOWS_AMD64_ARTIFACT" windows
 
 if [[ "$(uname -s)" == "Linux" ]] && command -v ldd >/dev/null 2>&1; then
-  LDD_OUTPUT=$(ldd "$DIST_DIR/datashelf-linux-amd64" 2>&1 || true)
+  LDD_OUTPUT=$(ldd "$DIST_DIR/$LINUX_AMD64_ARTIFACT" 2>&1 || true)
   if ! grep -qi 'not a dynamic executable' <<<"$LDD_OUTPUT"; then
-    echo "datashelf-linux-amd64 is dynamically linked" >&2
+    echo "$LINUX_AMD64_ARTIFACT is dynamically linked" >&2
     exit 1
   fi
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then
-  (cd "$DIST_DIR" && sha256sum datashelf-* > SHA256SUMS)
+  (cd "$DIST_DIR" && sha256sum \
+    "$LINUX_AMD64_ARTIFACT" \
+    "$DARWIN_AMD64_ARTIFACT" \
+    "$DARWIN_ARM64_ARTIFACT" \
+    "$WINDOWS_AMD64_ARTIFACT" > "$CHECKSUMS_FILE")
 else
-  (cd "$DIST_DIR" && shasum -a 256 datashelf-* > SHA256SUMS)
+  (cd "$DIST_DIR" && shasum -a 256 \
+    "$LINUX_AMD64_ARTIFACT" \
+    "$DARWIN_AMD64_ARTIFACT" \
+    "$DARWIN_ARM64_ARTIFACT" \
+    "$WINDOWS_AMD64_ARTIFACT" > "$CHECKSUMS_FILE")
 fi
 
 echo "DataShelf $RELEASE_VERSION release artifacts written to $DIST_DIR"
