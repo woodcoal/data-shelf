@@ -4,7 +4,19 @@ DataShelf 是一个让本地资料可被远程安全访问与分享的只读资�
 
 它适合将仍由本地磁盘管理的资料通过受控地址提供给远程浏览器查看：目录和文件可沿用已有的密码边界与分享机制对外开放；只读、按应用隔离的密码和受控 HTML 渲染是这一使用方式的安全约束，而非产品目的本身。
 
-Agent 生成的独立 HTML 也可直接放入资料目录，通过 DataShelf 地址持续访问。即使 Agent 为生成结果启动的临时服务已停止，HTML 文件仍作为资料目录中的内容保留，并可按现有授权规则打开或分享。
+## 第一个示例：保留 Agent 生成的 HTML
+
+将 Agent 生成的自包含 HTML 当作普通资料放进一个一级应用目录。例如，Agent 已生成 `report.html` 后：
+
+```bash
+mkdir -p ./data/agent-result
+cp /path/to/report.html ./data/agent-result/
+go run . -dir ./data
+```
+
+然后在浏览器打开 `http://127.0.0.1:9090/agent-result/`，点击 `report.html` 即可在 DataShelf 的受控 HTML 视图中查看；需要时也可使用该应用已有的分享能力。这个地址由 DataShelf 和资料目录提供，不依赖 Agent 为本次生成临时启动的服务继续运行。
+
+这不是永久可用性承诺：机器可访问、DataShelf 进程仍在运行且 HTML 文件未被删除时，链接才可使用。若要让受控外部访问通过 HTTPS 进入本机 loopback 服务，请按[自管 HTTPS 反向代理指南](docs/RELEASE.md#自管-https-反向代理)部署；域名、证书、代理和公网暴露均由部署者负责。
 
 ## 启动
 

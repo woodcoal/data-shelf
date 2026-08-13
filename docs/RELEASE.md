@@ -43,10 +43,36 @@ sha256sum -c SHA256SUMS
 
 ### 运行约定与风险
 
-- 默认监听 `127.0.0.1:9090`，默认数据目录是 `~/Documents/data`；`-dir` 可显式指定其他目录。
+- 默认监听 `127.0.0.1:9090`，默认数据目录是启动目录；`-dir` 可显式指定其他目录。
 - 日志写到标准输出和标准错误。直接运行时可重定向到文件；systemd、launchd 和 Windows 任务脚本分别提供系统日志或日志文件配置。
 - LAN 访问必须显式设置 `-host 0.0.0.0`（或具体 LAN 地址），并同步配置防火墙。程序没有内置 TLS，暴露 LAN 时必须放在 HTTPS 反向代理后面；否则密码和资料可能被窃听。
 - 默认 loopback 只适合本机访问，不应通过端口转发或公网反向代理暴露。
+
+### 自管 HTTPS 反向代理
+
+DataShelf 默认只监听 `127.0.0.1:9090`，程序本身不提供 TLS、域名、证书或公网暴露能力。若需要通过受控域名访问，保持 DataShelf 使用默认 loopback 监听，由你自行部署和运维反向代理；代理的上游必须是 `127.0.0.1:9090`，不要把 `9090` 直接映射到公网、端口转发或安全组。
+
+以下 Nginx 服务器块可作为最小起点。将域名和证书路径替换为你自己管理的值；证书的申请、续期、HTTP 到 HTTPS 的跳转、防火墙和访问策略均不属于 DataShelf 的配置范围。
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name docs.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/docs.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/docs.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:9090;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+`X-Forwarded-Proto` 必须由本机受信任的代理设置为 `https`：DataShelf 仅在来自 loopback 的请求携带该标头时将登录 Cookie 标记为 `Secure`。不要让外部客户端直接连接 `9090` 或自行伪造该标头。反向代理只负责把 HTTPS 请求转发到本机 loopback；资料的密码、访问控制和分享规则仍由 DataShelf 按应用执行，公网是否开放及其额外访问限制由你决定。
 - `.env` 中无前缀的首次密码会在首次读取时替换为 Argon2id `hash:`；`plain:` 仅保留一周期兼容。不要把包含密码的 `.env`、日志或运行时配置提交到 Git。
 
 ## Linux systemd user service
