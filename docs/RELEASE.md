@@ -22,6 +22,8 @@ dist/datashelf-v1.26.813-darwin-amd64
 dist/datashelf-v1.26.813-darwin-arm64
 dist/datashelf-v1.26.813-windows-amd64.exe
 dist/SHA256SUMS-v1.26.813
+dist/NOTICE
+dist/THIRD_PARTY_LICENSES
 ```
 
 构建参数包含 `-trimpath`、`-buildvcs=false` 和空 Build ID，避免把本地路径、Git 状态或构建机标识写进产物。Linux 产物必须是静态 ELF；所有目标都关闭 CGO，因此不依赖第三方运行时 DLL/`.so`。macOS 仍会使用操作系统提供的系统库，这是平台本身的运行时，不需要额外安装运行库。
@@ -40,6 +42,9 @@ git push origin "v$(tr -d '[:space:]' < VERSION)"
 ```bash
 sha256sum -c SHA256SUMS-v1.26.813
 ```
+
+每个 Release 还附带 `NOTICE` 和 `THIRD_PARTY_LICENSES`。它们保留了
+DataShelf 及四个 Go 依赖的版权声明和完整许可文本，适用于二进制再分发。
 
 ### 运行约定与风险
 

@@ -4,6 +4,10 @@ DataShelf 是一个让本地资料可被远程安全访问与分享的只读资�
 
 它适合将仍由本地磁盘管理的资料通过受控地址提供给远程浏览器查看：目录和文件可沿用已有的密码边界与分享机制对外开放；只读、按应用隔离的密码和受控 HTML 渲染是这一使用方式的安全约束，而非产品目的本身。
 
+## Demo
+
+![DataShelf demo: start, browse, share, and open Agent HTML through a fixed link](assets/demo.gif)
+
 ## 第一个示例：保留 Agent 生成的 HTML
 
 将 Agent 生成的自包含 HTML 当作普通资料放进一个一级应用目录。例如，Agent 已生成 `report.html` 后：

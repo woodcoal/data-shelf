@@ -23,6 +23,8 @@ fi
 RELEASE_TAG="v$RELEASE_VERSION"
 ARTIFACT_PREFIX="datashelf-$RELEASE_TAG"
 CHECKSUMS_FILE="SHA256SUMS-$RELEASE_TAG"
+NOTICE_FILE="NOTICE"
+LICENSES_FILE="THIRD_PARTY_LICENSES"
 LINUX_AMD64_ARTIFACT="$ARTIFACT_PREFIX-linux-amd64"
 DARWIN_AMD64_ARTIFACT="$ARTIFACT_PREFIX-darwin-amd64"
 DARWIN_ARM64_ARTIFACT="$ARTIFACT_PREFIX-darwin-arm64"
@@ -32,6 +34,13 @@ if [[ -n "${GITHUB_REF_NAME:-}" && "$GITHUB_REF_NAME" == v* && "${GITHUB_REF_NAM
   echo "Git tag $GITHUB_REF_NAME does not match VERSION $RELEASE_VERSION" >&2
   exit 1
 fi
+
+for release_document in "$NOTICE_FILE" "$LICENSES_FILE"; do
+  if [[ ! -s "$ROOT_DIR/$release_document" ]]; then
+    echo "$release_document is required for a release" >&2
+    exit 1
+  fi
+done
 
 if ! command -v "$GO_BIN" >/dev/null 2>&1; then
   echo "Go 1.25 or newer is required" >&2
@@ -62,7 +71,12 @@ rm -f \
   "$DIST_DIR/$DARWIN_AMD64_ARTIFACT" \
   "$DIST_DIR/$DARWIN_ARM64_ARTIFACT" \
   "$DIST_DIR/$WINDOWS_AMD64_ARTIFACT" \
-  "$DIST_DIR/$CHECKSUMS_FILE"
+  "$DIST_DIR/$CHECKSUMS_FILE" \
+  "$DIST_DIR/$NOTICE_FILE" \
+  "$DIST_DIR/$LICENSES_FILE"
+
+cp "$ROOT_DIR/$NOTICE_FILE" "$DIST_DIR/$NOTICE_FILE"
+cp "$ROOT_DIR/$LICENSES_FILE" "$DIST_DIR/$LICENSES_FILE"
 
 build_target() {
   local goos=$1
@@ -121,13 +135,17 @@ if command -v sha256sum >/dev/null 2>&1; then
     "$LINUX_AMD64_ARTIFACT" \
     "$DARWIN_AMD64_ARTIFACT" \
     "$DARWIN_ARM64_ARTIFACT" \
-    "$WINDOWS_AMD64_ARTIFACT" > "$CHECKSUMS_FILE")
+    "$WINDOWS_AMD64_ARTIFACT" \
+    "$NOTICE_FILE" \
+    "$LICENSES_FILE" > "$CHECKSUMS_FILE")
 else
   (cd "$DIST_DIR" && shasum -a 256 \
     "$LINUX_AMD64_ARTIFACT" \
     "$DARWIN_AMD64_ARTIFACT" \
     "$DARWIN_ARM64_ARTIFACT" \
-    "$WINDOWS_AMD64_ARTIFACT" > "$CHECKSUMS_FILE")
+    "$WINDOWS_AMD64_ARTIFACT" \
+    "$NOTICE_FILE" \
+    "$LICENSES_FILE" > "$CHECKSUMS_FILE")
 fi
 
 echo "DataShelf $RELEASE_VERSION release artifacts written to $DIST_DIR"
