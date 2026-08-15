@@ -140,6 +140,26 @@ func TestCanonicalRoutesLegacyRedirectAndReturnTargets(t *testing.T) {
 	}
 }
 
+func TestLowercaseAppPasswordDoesNotLogLockedOnRequests(t *testing.T) {
+	root := t.TempDir()
+	appDir := filepath.Join(root, "private")
+	if err := os.Mkdir(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, ".env"), []byte("password='测试密码123'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	s, err := newServer(root, "Test Shelf", log.New(&logs, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := request(t, s, http.MethodGet, "/_auth/private", nil)
+	if w.Code != http.StatusOK || strings.Contains(logs.String(), "is locked") {
+		t.Fatalf("lowercase password produced a locked request: status=%d logs=%q", w.Code, logs.String())
+	}
+}
+
 func TestReservedApplicationNamesAreNotPublished(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"a", "_preview", "正常应用"} {

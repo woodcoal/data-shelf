@@ -82,17 +82,16 @@ func TestHTMLAndShareStayInTheirOwnAuthorizationBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	markdownToken := base64.RawURLEncoding.EncodeToString(markdownTokenBytes)
-	passwordHash, err := hashPassword("分享密码123")
-	if err != nil {
-		t.Fatal(err)
-	}
-	env := "title='文档'\nSHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='report.html'\nSHARE_DOC_TOKEN='" + token + "'\nSHARE_DOC_EXPIRES_AT='2026-08-20T12:00:00+08:00'\nSHARE_DOC_PASSWORD='" + passwordHash + "'\nSHARE_DOC_ALLOW_DOWNLOAD='false'\nSHARE_NOTES_ENABLED='true'\nSHARE_NOTES_SCOPE='file'\nSHARE_NOTES_PATH='notes.md'\nSHARE_NOTES_TOKEN='" + markdownToken + "'\nSHARE_NOTES_EXPIRES_AT='2026-08-20T12:00:00+08:00'\nSHARE_NOTES_PASSWORD='" + passwordHash + "'\nSHARE_NOTES_ALLOW_DOWNLOAD='false'\n"
+	env := "title='文档'\nSHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='report.html'\nSHARE_DOC_TOKEN='" + token + "'\nSHARE_DOC_EXPIRES_AT='2026-08-20T12:00:00+08:00'\nSHARE_DOC_PASSWORD='分享密码123'\nSHARE_DOC_ALLOW_DOWNLOAD='false'\nSHARE_NOTES_ENABLED='true'\nSHARE_NOTES_SCOPE='file'\nSHARE_NOTES_PATH='notes.md'\nSHARE_NOTES_TOKEN='" + markdownToken + "'\nSHARE_NOTES_EXPIRES_AT='2026-08-20T12:00:00+08:00'\nSHARE_NOTES_PASSWORD='分享密码123'\nSHARE_NOTES_ALLOW_DOWNLOAD='false'\n"
 	if err := os.WriteFile(filepath.Join(appDir, ".env"), []byte(env), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s, err := newServer(root, "fallback", log.New(io.Discard, "", 0))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if status := loadShareStatuses(appDir, time.Now())["report.html"]; status.ShareURL != "/_s/"+token+"/" {
+		t.Fatalf("bare share password was not published: %+v", status)
 	}
 
 	// The ordinary HTML file goes to the trusted shell; the untrusted response

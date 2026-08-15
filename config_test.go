@@ -133,6 +133,22 @@ func TestMissingEnvIsPublic(t *testing.T) {
 	}
 }
 
+func TestLowercaseAppPasswordMigratesWithoutLocking(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("title='私有资料'\ndescription='说明'\npassword='正确密码六位'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadAppConfig(dir, "fallback")
+	if err != nil || cfg.Locked || !cfg.Protected || cfg.Name != "私有资料" || cfg.Description != "说明" || !verifyPassword(cfg.Password, "正确密码六位") {
+		t.Fatalf("lowercase configuration was not accepted: cfg=%+v err=%v", cfg, err)
+	}
+	updated, err := os.ReadFile(envPath)
+	if err != nil || !strings.Contains(string(updated), "password='hash:") {
+		t.Fatalf("lowercase password was not migrated: %q err=%v", updated, err)
+	}
+}
+
 func TestRootConfigLoadsAndMigratesPassword(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, ".env")
