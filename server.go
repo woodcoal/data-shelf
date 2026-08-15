@@ -868,43 +868,6 @@ func (s *server) htmlContent(w http.ResponseWriter, r *http.Request, slug string
 	s.serveHTMLContent(w, r, target, info)
 }
 
-func (s *server) preview(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
-	app, ok := s.app(slug)
-	if !ok || len(segments) == 0 || r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.NotFound(w, r)
-		return
-	}
-	cfg := s.effectiveConfig(app)
-	if !s.authorizeApp(w, r, slug, cfg) {
-		return
-	}
-	for _, segment := range segments {
-		if segment == "" || isPrivateName(segment) {
-			http.NotFound(w, r)
-			return
-		}
-	}
-	target, info, err := resolveSafePath(app.Dir, segments)
-	if err != nil || !info.Mode().IsRegular() {
-		http.NotFound(w, r)
-		return
-	}
-	kind, _ := previewFor(info.Name(), info)
-	if kind == "none" && isMarkdownName(info.Name()) {
-		kind = "markdown"
-	}
-	if kind == "none" {
-		http.NotFound(w, r)
-		return
-	}
-	if kind == "markdown" {
-		s.serveMarkdown(w, r, slug, segments, target, info)
-		return
-	}
-	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'")
-	s.serveFile(w, r, target, info, false)
-}
-
 func (s *server) serveMarkdown(w http.ResponseWriter, r *http.Request, slug string, segments []string, path string, info fs.FileInfo) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -935,24 +898,6 @@ func (s *server) serveMarkdown(w http.ResponseWriter, r *http.Request, slug stri
 		return
 	}
 	_, _ = fmt.Fprintf(w, "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Markdown 预览</title><style>body{margin:0 auto;max-width:72rem;padding:2rem;font:16px/1.65 system-ui,sans-serif}pre{overflow:auto;padding:1rem;background:#f4f4f4}table{border-collapse:collapse}th,td{border:1px solid #bbb;padding:.4rem}</style></head><body>%s</body></html>", body)
-}
-
-func (s *server) download(w http.ResponseWriter, r *http.Request, slug string, segments []string) {
-	app, ok := s.app(slug)
-	if !ok || len(segments) == 0 || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
-		http.NotFound(w, r)
-		return
-	}
-	cfg := s.effectiveConfig(app)
-	if !s.authorizeApp(w, r, slug, cfg) {
-		return
-	}
-	target, info, err := resolveSafePath(app.Dir, segments)
-	if err != nil || !info.Mode().IsRegular() {
-		http.NotFound(w, r)
-		return
-	}
-	s.serveDownload(w, r, target, info)
 }
 
 func previewFor(name string, info fs.FileInfo) (kind, openMode string) {
