@@ -948,7 +948,7 @@ func TestEmbeddedAccessErrorTemplate(t *testing.T) {
 func TestMarkdownPreviewIsSanitizedAndAuthorizedBeforeRead(t *testing.T) {
 	s, slug := makeTestServer(t, true)
 	name := "危险.md"
-	source := "# 标题\n\n<script>alert(1)</script>\n\n[危险](javascript:alert(1)) [站外](https://example.test/a) [同应用](guide.txt)\n\n![远程图片](https://example.test/x.png)"
+	source := "# 标题\n\n<script>alert(1)</script>\n\n[危险](javascript:alert(1)) [站外](https://example.test/a) [同应用](guide.txt) [首页](/) [跨应用](/other/guide.txt) [伪站外](//example.test/)\n\n![远程图片](https://example.test/x.png)"
 	if err := os.WriteFile(filepath.Join(s.apps[slug].Dir, name), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -970,12 +970,18 @@ func TestMarkdownPreviewIsSanitizedAndAuthorizedBeforeRead(t *testing.T) {
 		}
 	}
 	body := w.Body.String()
-	for _, forbidden := range []string{"<script>", "javascript:", "<img"} {
+	for _, forbidden := range []string{"<script>", "javascript:", "<img", `href="//example.test/"`} {
 		if strings.Contains(strings.ToLower(body), forbidden) {
 			t.Errorf("unsafe markdown output contains %q: %s", forbidden, body)
 		}
 	}
-	for _, want := range []string{`href="https://example.test/a" target="_blank" rel="noopener noreferrer"`, `href="` + appURL(slug, []string{"guide.txt"}, false) + `"`, "远程图片"} {
+	for _, want := range []string{
+		`href="https://example.test/a" target="_blank" rel="noopener noreferrer"`,
+		`href="` + appURL(slug, []string{"guide.txt"}, false) + `"`,
+		`href="/" target="_blank" rel="noopener noreferrer"`,
+		`href="/other/guide.txt" target="_blank" rel="noopener noreferrer"`,
+		"远程图片",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("markdown output missing %q", want)
 		}

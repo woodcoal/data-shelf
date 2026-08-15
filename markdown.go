@@ -171,8 +171,24 @@ func safeMarkdownLink(raw, slug string, sourceSegments []string) (string, bool, 
 		}
 		return u.String(), true, true
 	}
-	if u.Scheme != "" || u.Host != "" || strings.HasPrefix(u.EscapedPath(), "/") || u.RawQuery != "" {
+	if u.Scheme != "" || u.Host != "" || u.RawQuery != "" {
 		return "", false, false
+	}
+	if strings.HasPrefix(u.EscapedPath(), "/") {
+		segments, err := decodePathSegments(u.EscapedPath())
+		if err != nil {
+			return "", false, false
+		}
+		for _, segment := range segments {
+			if isPrivateName(segment) {
+				return "", false, false
+			}
+		}
+		result := u.EscapedPath()
+		if u.Fragment != "" {
+			result += "#" + url.PathEscape(u.Fragment)
+		}
+		return result, true, true
 	}
 	if u.EscapedPath() == "" && u.Fragment != "" {
 		return "#" + url.PathEscape(u.Fragment), false, true
