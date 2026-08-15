@@ -127,20 +127,38 @@ func lockedConfig(fallbackName string) appConfig {
 
 func lockedConfigWithMetadata(doc envDocument, fallbackName string) appConfig {
 	cfg := lockedConfig(fallbackName)
-	if doc.keyCount["NAME"] == 1 && doc.values["NAME"] != "" {
-		cfg.Name = doc.values["NAME"]
+	nameKey, descriptionKey := "NAME", "DESCRIPTION"
+	if doc.keyCount["title"]+doc.keyCount["description"]+doc.keyCount["password"] > 0 {
+		nameKey, descriptionKey = "title", "description"
 	}
-	if doc.keyCount["DESCRIPTION"] == 1 {
-		cfg.Description = doc.values["DESCRIPTION"]
+	if doc.keyCount[nameKey] == 1 && doc.values[nameKey] != "" {
+		cfg.Name = doc.values[nameKey]
+	}
+	if doc.keyCount[descriptionKey] == 1 {
+		cfg.Description = doc.values[descriptionKey]
 	}
 	return cfg
 }
 
 func configFromDocument(doc envDocument, fallbackName string, raw []byte) (appConfig, error) {
-	if doc.keyCount["PASSWORD"] != 1 {
+	for _, key := range []string{"NAME", "DESCRIPTION", "PASSWORD", "title", "description", "password"} {
+		if doc.keyCount[key] > 1 {
+			return appConfig{}, fmt.Errorf("%s must appear at most once", key)
+		}
+	}
+	usesOld := doc.keyCount["NAME"]+doc.keyCount["DESCRIPTION"]+doc.keyCount["PASSWORD"] > 0
+	usesNew := doc.keyCount["title"]+doc.keyCount["description"]+doc.keyCount["password"] > 0
+	if usesOld && usesNew {
+		return appConfig{}, errors.New("legacy and lower-case configuration cannot be mixed")
+	}
+	nameKey, descriptionKey, passwordKey := "NAME", "DESCRIPTION", "PASSWORD"
+	if usesNew {
+		nameKey, descriptionKey, passwordKey = "title", "description", "password"
+	}
+	if doc.keyCount[passwordKey] != 1 {
 		return appConfig{}, errors.New("PASSWORD must appear exactly once")
 	}
-	password := doc.values["PASSWORD"]
+	password := doc.values[passwordKey]
 	if password == "" {
 		return appConfig{}, errors.New("PASSWORD is empty")
 	}
@@ -148,12 +166,12 @@ func configFromDocument(doc envDocument, fallbackName string, raw []byte) (appCo
 		return appConfig{}, errors.New("unknown PASSWORD format")
 	}
 	name := fallbackName
-	if doc.keyCount["NAME"] == 1 && doc.values["NAME"] != "" {
-		name = doc.values["NAME"]
+	if doc.keyCount[nameKey] == 1 && doc.values[nameKey] != "" {
+		name = doc.values[nameKey]
 	}
 	description := ""
-	if doc.keyCount["DESCRIPTION"] == 1 {
-		description = doc.values["DESCRIPTION"]
+	if doc.keyCount[descriptionKey] == 1 {
+		description = doc.values[descriptionKey]
 	}
 	return appConfig{
 		Name:        name,
@@ -399,7 +417,7 @@ func loadShareStatuses(dir string, now time.Time) map[string]shareStatus {
 		if err != nil || len(token) != 32 || base64.RawURLEncoding.EncodeToString(token) != group.values["TOKEN"] {
 			return closed
 		}
-		if _, err := decodePasswordHash(group.values["PASSWORD"]); err != nil {
+		if _, err := normalizeSharePassword(group.values["PASSWORD"]); err != nil {
 			return closed
 		}
 		expiresAt, err := time.Parse(time.RFC3339, group.values["EXPIRES_AT"])
@@ -463,7 +481,11 @@ func validatePlainPassword(password string) error {
 }
 
 func replaceEnvPassword(doc envDocument, hash string) ([]byte, error) {
-	return replaceDocumentPassword(doc, "PASSWORD", hash)
+	key := "PASSWORD"
+	if doc.keyCount["password"] == 1 {
+		key = "password"
+	}
+	return replaceDocumentPassword(doc, key, hash)
 }
 
 func replaceDocumentPassword(doc envDocument, keyName, hash string) ([]byte, error) {

@@ -260,7 +260,8 @@ func sharesFromEnv(app *application, owner string, policy directoryPolicy) ([]sh
 		if err != nil || expires.Sub(time.Now()) > 30*24*time.Hour {
 			return nil, errors.New("invalid share expiry")
 		}
-		if err := validateSharePassword(values["PASSWORD"]); err != nil {
+		password, err := normalizeSharePassword(values["PASSWORD"])
+		if err != nil {
 			return nil, err
 		}
 		allow := values["ALLOW_DOWNLOAD"] == "true"
@@ -272,20 +273,32 @@ func sharesFromEnv(app *application, owner string, policy directoryPolicy) ([]sh
 			return nil, errors.New("invalid share target")
 		}
 		identity := fmt.Sprintf("%s\x00%d\x00%d\x00%x", path, info.Size(), info.ModTime().UnixNano(), policy.Version)
-		result = append(result, shareDefinition{ID: id, Token: values["TOKEN"], Password: values["PASSWORD"], App: app, OwnerDir: owner, Filename: values["PATH"], Expires: expires, AllowDownload: allow, HTMLScriptsAllowed: policy.HTMLScriptsAllowed, Version: sha256.Sum256([]byte(identity))})
+		result = append(result, shareDefinition{ID: id, Token: values["TOKEN"], Password: password, App: app, OwnerDir: owner, Filename: values["PATH"], Expires: expires, AllowDownload: allow, HTMLScriptsAllowed: policy.HTMLScriptsAllowed, Version: sha256.Sum256([]byte(identity))})
 	}
 	return result, nil
 }
 
-func validateSharePassword(value string) error {
+// normalizeSharePassword preserves the legacy bare share-password syntax as a
+// plaintext password without rewriting the directory configuration. Shares
+// are resolved on every request, so an in-place migration would add needless
+// filesystem writes to an authentication path.
+func normalizeSharePassword(value string) (string, error) {
 	if strings.HasPrefix(value, "plain:") {
-		return validatePlainPassword(strings.TrimPrefix(value, "plain:"))
+		if err := validatePlainPassword(strings.TrimPrefix(value, "plain:")); err != nil {
+			return "", err
+		}
+		return value, nil
 	}
-	if !strings.HasPrefix(value, "hash:") {
-		return errors.New("invalid share password")
+	if strings.HasPrefix(value, "hash:") {
+		if _, err := decodePasswordHash(value); err != nil {
+			return "", err
+		}
+		return value, nil
 	}
-	_, err := decodePasswordHash(value)
-	return err
+	if err := validatePlainPassword(value); err != nil {
+		return "", err
+	}
+	return "plain:" + value, nil
 }
 
 func (s *server) findShare(token string) (shareDefinition, bool) {
