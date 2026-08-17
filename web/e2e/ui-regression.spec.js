@@ -193,6 +193,13 @@ test("移动端保留三项排序，并支持键盘操作", async ({ page }) => 
   await expect(nameSort).toBeVisible();
   await expect(typeSort).toBeVisible();
   await expect(sizeSort).toBeVisible();
+  const alphaRow = page.locator(".entry", { has: page.getByRole("link", { name: "alpha.bin" }) });
+  const alphaSize = alphaRow.locator(".entry-size");
+  await expect(alphaSize).toBeVisible();
+  const [sizeHeaderBox, sizeValueBox] = await Promise.all([sizeSort.boundingBox(), alphaSize.boundingBox()]);
+  expect(sizeHeaderBox).not.toBeNull();
+  expect(sizeValueBox).not.toBeNull();
+  expect(Math.abs(sizeHeaderBox.x - sizeValueBox.x)).toBeLessThanOrEqual(1);
   await sizeSort.focus();
   await page.keyboard.press("Enter");
   await expect(sizeSort).toHaveAttribute("aria-sort", "ascending");
