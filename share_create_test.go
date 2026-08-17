@@ -68,6 +68,49 @@ func TestShareCreationRequiresAuthorizedProtectedDirectoryAndPreservesConfig(t *
 	}
 }
 
+func TestShareCreationReportsPasswordValidationSeparately(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	endpoint := appResourceURL(slug, "_shares", nil)
+	w := postShareCreate(t, s, endpoint, shareCreateRequest{
+		Scope: "directory", Path: ".", Password: "12345",
+		ExpiresAt: time.Now().Add(24 * time.Hour).Format(time.RFC3339),
+	}, login(t, s, slug))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("short password status=%d body=%q", w.Code, w.Body.String())
+	}
+	var response map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response["error"] != "分享密码至少需要 6 位" {
+		t.Fatalf("short password response=%q err=%v", w.Body.String(), err)
+	}
+}
+
+func TestSharePagesShowSafeErrorsWithoutLeakingCapabilityMetadata(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	endpoint := appResourceURL(slug, "_shares", nil)
+	payload := shareCreateRequest{Scope: "directory", Path: ".", Password: "分享访问密码123", ExpiresAt: time.Now().Add(24 * time.Hour).Format(time.RFC3339)}
+	created := postShareCreate(t, s, endpoint, payload, login(t, s, slug))
+	var response map[string]string
+	if err := json.Unmarshal(created.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	gate := request(t, s, http.MethodGet, response["share_url"], nil)
+	if gate.Code != http.StatusOK || !strings.Contains(gate.Body.String(), "访问分享") || !strings.Contains(gate.Body.String(), "v"+buildVersion) || strings.Contains(gate.Body.String(), payload.Password) {
+		t.Fatalf("share gate=%d body=%q", gate.Code, gate.Body.String())
+	}
+	token := strings.TrimSuffix(strings.TrimPrefix(response["share_url"], "/_s/"), "/")
+	wrong := httptest.NewRequest(http.MethodPost, "/_s/"+token+"/_auth", strings.NewReader("password=错误密码123"))
+	wrong.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	wrongResult := httptest.NewRecorder()
+	s.ServeHTTP(wrongResult, wrong)
+	if wrongResult.Code != http.StatusUnauthorized || !strings.Contains(wrongResult.Body.String(), "密码不正确，请重试。") {
+		t.Fatalf("wrong password=%d body=%q", wrongResult.Code, wrongResult.Body.String())
+	}
+	unknown := request(t, s, http.MethodGet, "/_s/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/", nil)
+	if unknown.Code != http.StatusNotFound || !strings.Contains(unknown.Body.String(), "分享链接不可用") || strings.Contains(unknown.Body.String(), token) {
+		t.Fatalf("unknown share=%d body=%q", unknown.Code, unknown.Body.String())
+	}
+}
+
 func TestDirectoryShareRejectsNestedPasswordBoundaryAndServesOnlyItsTree(t *testing.T) {
 	s, slug := makeTestServer(t, true)
 	appDir := s.apps[slug].Dir

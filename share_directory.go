@@ -12,6 +12,12 @@ import (
 	"strings"
 )
 
+type shareDirectoryItem struct {
+	Name, URL, DownloadURL string
+	IsDirectory            bool
+	Previewable            bool
+}
+
 func shareDirectoryURL(token string, segments []string, directory bool) string {
 	parts := []string{"", "_s", url.PathEscape(token), "_directory"}
 	for _, segment := range segments {
@@ -136,8 +142,7 @@ func (s *server) shareDirectoryListing(w http.ResponseWriter, r *http.Request, t
 		http.NotFound(w, r)
 		return
 	}
-	type entry struct{ name, href, download string }
-	items := make([]entry, 0, len(entries))
+	items := make([]shareDirectoryItem, 0, len(entries))
 	for _, item := range entries {
 		if isPrivateName(item.Name()) || item.Type()&os.ModeSymlink != 0 {
 			continue
@@ -148,7 +153,7 @@ func (s *server) shareDirectoryListing(w http.ResponseWriter, r *http.Request, t
 		}
 		child := append(append([]string{}, relative...), item.Name())
 		if info.IsDir() {
-			items = append(items, entry{name: item.Name() + "/", href: shareDirectoryURL(token, child, true)})
+			items = append(items, shareDirectoryItem{Name: item.Name(), URL: shareDirectoryURL(token, child, true), IsDirectory: true})
 			continue
 		}
 		kind, _ := previewFor(item.Name(), info)
@@ -164,29 +169,21 @@ func (s *server) shareDirectoryListing(w http.ResponseWriter, r *http.Request, t
 		if allowDownload && href != shareDirectoryResourceURL(token, "_download", child) {
 			download = shareDirectoryResourceURL(token, "_download", child)
 		}
-		items = append(items, entry{name: item.Name(), href: href, download: download})
+		items = append(items, shareDirectoryItem{Name: item.Name(), URL: href, DownloadURL: download, Previewable: kind != "none"})
 	}
-	sort.Slice(items, func(i, j int) bool { return strings.ToLower(items[i].name) < strings.ToLower(items[j].name) })
+	sort.Slice(items, func(i, j int) bool { return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name) })
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	setPageSecurityHeaders(w)
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = fmt.Fprint(w, "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>分享目录</title><h1>分享目录</h1><ul>")
-	for _, item := range items {
-		name := template.HTMLEscapeString(item.name)
-		if item.href == "" {
-			_, _ = fmt.Fprintf(w, "<li>%s</li>", name)
-			continue
-		}
-		_, _ = fmt.Fprintf(w, "<li><a href='%s'>%s</a>", template.HTMLEscapeString(item.href), name)
-		if item.download != "" {
-			_, _ = fmt.Fprintf(w, " <a href='%s' download>下载</a>", template.HTMLEscapeString(item.download))
-		}
-		_, _ = fmt.Fprint(w, "</li>")
+	if err := s.pages.ExecuteTemplate(w, "share-directory", map[string]any{
+		"PageTitle": "分享目录 - " + s.title,
+		"Items":     items,
+	}); err != nil {
+		s.logger.Printf("render share directory: %v", err)
 	}
-	_, _ = fmt.Fprint(w, "</ul>")
 }
 
 func (s *server) shareDirectoryHTMLShell(w http.ResponseWriter, r *http.Request, token string, relative []string, info fs.FileInfo, scriptsAllowed bool) {

@@ -90,7 +90,11 @@ func newServerWithConfig(root, title string, global globalConfig, logger *log.Lo
 	if err != nil {
 		return nil, fmt.Errorf("initialize sessions: %w", err)
 	}
-	pages, err := template.New("pages").Funcs(template.FuncMap{"pathEscape": url.PathEscape, "assetURL": assetURL}).Parse(pageTemplates)
+	pages, err := template.New("pages").Funcs(template.FuncMap{
+		"pathEscape":   url.PathEscape,
+		"assetURL":     assetURL,
+		"buildVersion": func() string { return buildVersion },
+	}).Parse(pageTemplates)
 	if err != nil {
 		return nil, err
 	}
@@ -1015,8 +1019,7 @@ func (s *server) share(w http.ResponseWriter, r *http.Request, segments []string
 	share, ok := s.findShare(segments[0])
 	if !ok || time.Now().After(share.Expires) {
 		s.shareLookupLimiter.allowed(lookupKey, source)
-		w.Header().Set("Cache-Control", "no-store")
-		http.NotFound(w, r)
+		s.renderShareUnavailable(w, r)
 		return
 	}
 	s.shareLookupLimiter.reset(lookupKey, source)
@@ -1104,14 +1107,7 @@ func (s *server) shareGate(w http.ResponseWriter, r *http.Request, share shareDe
 		http.Redirect(w, r, shareOpenURL(token, share.Filename, share.Scope), http.StatusSeeOther)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "private, no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	setPageSecurityHeaders(w)
-	if r.Method == http.MethodHead {
-		return
-	}
-	_, _ = fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>分享访问</title><form method=post action='%s'><label>访问密码 <input type=password name=password autocomplete=current-password required></label><button>打开分享</button></form>", template.HTMLEscapeString("/_s/"+url.PathEscape(token)+"/_auth"))
+	s.renderShareGate(w, r, token, http.StatusOK, "")
 }
 
 func (s *server) shareAuth(w http.ResponseWriter, r *http.Request, share shareDefinition, token string) {
@@ -1122,16 +1118,16 @@ func (s *server) shareAuth(w http.ResponseWriter, r *http.Request, share shareDe
 	w.Header().Set("Cache-Control", "private, no-store")
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "请求无效", http.StatusBadRequest)
+		s.renderShareGate(w, r, token, http.StatusBadRequest, "请求无效，请重新打开分享链接后再试。")
 		return
 	}
 	key := "share:" + share.ID
 	if !s.limiter.allowed(key, sourceIP(r)) {
-		http.Error(w, "尝试次数过多，请稍后再试", http.StatusTooManyRequests)
+		s.renderShareGate(w, r, token, http.StatusTooManyRequests, "尝试次数过多，请稍后再试。")
 		return
 	}
 	if !verifyConfiguredPassword(share.Password, r.Form.Get("password")) {
-		http.Error(w, "密码不正确", http.StatusUnauthorized)
+		s.renderShareGate(w, r, token, http.StatusUnauthorized, "密码不正确，请重试。")
 		return
 	}
 	s.limiter.reset(key, sourceIP(r))
@@ -1142,6 +1138,42 @@ func (s *server) shareAuth(w http.ResponseWriter, r *http.Request, share shareDe
 	}
 	http.SetCookie(w, &http.Cookie{Name: shareCookieName(token), Value: value, Path: "/_s/" + url.PathEscape(token) + "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: requestIsHTTPS(r), MaxAge: maxAge})
 	http.Redirect(w, r, shareOpenURL(token, share.Filename, share.Scope), http.StatusSeeOther)
+}
+
+func (s *server) renderShareGate(w http.ResponseWriter, r *http.Request, token string, status int, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	setPageSecurityHeaders(w)
+	w.WriteHeader(status)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if err := s.pages.ExecuteTemplate(w, "share-gate", map[string]string{
+		"PageTitle": "访问分享 - " + s.title,
+		"AuthURL":   "/_s/" + url.PathEscape(token) + "/_auth",
+		"Message":   message,
+	}); err != nil {
+		s.logger.Printf("render share gate: %v", err)
+	}
+}
+
+// renderShareUnavailable intentionally uses one message for unknown and
+// expired tokens, so the public endpoint does not disclose capability state.
+func (s *server) renderShareUnavailable(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	setPageSecurityHeaders(w)
+	w.WriteHeader(http.StatusNotFound)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if err := s.pages.ExecuteTemplate(w, "share-unavailable", map[string]string{
+		"PageTitle": "分享链接不可用 - " + s.title,
+	}); err != nil {
+		s.logger.Printf("render unavailable share: %v", err)
+	}
 }
 
 func shareOpenURL(token, filename string, scope ...string) string {
