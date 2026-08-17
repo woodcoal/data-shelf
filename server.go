@@ -48,6 +48,7 @@ type directoryItem struct {
 	Name, URL, Kind, Size, Modified                      string
 	PreviewKind, OpenKind, OpenMode, PreviewURL, OpenURL string
 	DownloadURL                                          string
+	ShareScope                                           string
 	CanZoom, CanNavigateImages                           bool
 	PreviousImage, NextImage                             *imageNavigation
 	Share                                                shareStatus
@@ -271,6 +272,9 @@ func (s *server) serveApplicationRoute(w http.ResponseWriter, r *http.Request, s
 			return
 		case "_html-content":
 			s.htmlContent(w, r, slug, segments[1:])
+			return
+		case "_shares":
+			s.createShare(w, r, slug, trimTrailingEmpty(segments[1:]))
 			return
 		default:
 			http.NotFound(w, r)
@@ -653,8 +657,10 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 			openKind = "file"
 		}
 		kind, size := "文件", humanSize(info.Size())
+		shareScope := "file"
 		if info.IsDir() {
 			kind, size = "目录", ""
+			shareScope = "directory"
 		}
 		share := shareStatus{State: "disabled"}
 		if configured, ok := shares[entry.Name()]; ok {
@@ -667,7 +673,7 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 			// The template consumes only server-generated capabilities. In particular,
 			// DownloadURL uses the authenticated attachment endpoint rather than the
 			// file's browse URL, so the browser cannot choose an unsafe disposition.
-			OpenURL: openResourceURL, DownloadURL: downloadResourceURL, CanZoom: previewKind == "image", Share: share,
+			OpenURL: openResourceURL, DownloadURL: downloadResourceURL, ShareScope: shareScope, CanZoom: previewKind == "image", Share: share,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -714,14 +720,19 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 	if r.Method == http.MethodHead {
 		return
 	}
+	shareCreateURL := ""
+	if cfg.Protected && !cfg.Locked {
+		shareCreateURL = appResourceURL(app.Slug, "_shares", segments)
+	}
 	if err := s.pages.ExecuteTemplate(w, "directory", map[string]any{
-		"PageTitle":   cfg.Name,
-		"Name":        displayName,
-		"Description": cfg.Description,
-		"Items":       items,
-		"Crumbs":      crumbs,
-		"Protected":   cfg.Protected,
-		"Locked":      cfg.Locked,
+		"PageTitle":      cfg.Name,
+		"Name":           displayName,
+		"Description":    cfg.Description,
+		"Items":          items,
+		"Crumbs":         crumbs,
+		"Protected":      cfg.Protected,
+		"Locked":         cfg.Locked,
+		"ShareCreateURL": shareCreateURL,
 	}); err != nil {
 		s.logger.Printf("render directory: %v", err)
 	}
@@ -1021,6 +1032,10 @@ func (s *server) share(w http.ResponseWriter, r *http.Request, segments []string
 	if !s.authorizeShare(w, r, share, token) {
 		return
 	}
+	if share.Scope == "directory" {
+		s.shareDirectoryRoute(w, r, share, token, segments[1:])
+		return
+	}
 	if len(segments) != 2 {
 		http.NotFound(w, r)
 		return
@@ -1086,7 +1101,7 @@ func (s *server) shareGate(w http.ResponseWriter, r *http.Request, share shareDe
 		return
 	}
 	if s.shareAuthorized(r, share, token) {
-		http.Redirect(w, r, shareOpenURL(token, share.Filename), http.StatusSeeOther)
+		http.Redirect(w, r, shareOpenURL(token, share.Filename, share.Scope), http.StatusSeeOther)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1126,10 +1141,13 @@ func (s *server) shareAuth(w http.ResponseWriter, r *http.Request, share shareDe
 		maxAge = int((8 * time.Hour).Seconds())
 	}
 	http.SetCookie(w, &http.Cookie{Name: shareCookieName(token), Value: value, Path: "/_s/" + url.PathEscape(token) + "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: requestIsHTTPS(r), MaxAge: maxAge})
-	http.Redirect(w, r, shareOpenURL(token, share.Filename), http.StatusSeeOther)
+	http.Redirect(w, r, shareOpenURL(token, share.Filename, share.Scope), http.StatusSeeOther)
 }
 
-func shareOpenURL(token, filename string) string {
+func shareOpenURL(token, filename string, scope ...string) string {
+	if len(scope) == 1 && scope[0] == "directory" {
+		return shareDirectoryURL(token, nil, true)
+	}
 	operation := "_preview"
 	if isHTMLName(filename) {
 		operation = "_html"
