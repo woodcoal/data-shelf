@@ -169,10 +169,33 @@ test("目录表头可稳定排序，并在长页提供滚动导航", async ({ pa
 
   const bottom = page.getByRole("button", { name: "前往底部" });
   await expect(bottom).toBeVisible();
+  const header = page.locator(".directory-heading-row");
+  const initialHeader = await header.boundingBox();
+  expect(initialHeader).not.toBeNull();
   await bottom.click();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  const fixedHeader = await header.boundingBox();
+  expect(fixedHeader).not.toBeNull();
+  expect(fixedHeader.y).toBeGreaterThanOrEqual(0);
+  expect(fixedHeader.y).toBeLessThanOrEqual(initialHeader.y);
   const top = page.getByRole("button", { name: "返回顶部" });
   await expect(top).toBeVisible();
   await top.click();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+});
+
+test("移动端保留三项排序，并支持键盘操作", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page);
+  const nameSort = page.getByRole("button", { name: "名称" });
+  const typeSort = page.getByRole("button", { name: "类型" });
+  const sizeSort = page.getByRole("button", { name: "大小" });
+  await expect(nameSort).toBeVisible();
+  await expect(typeSort).toBeVisible();
+  await expect(sizeSort).toBeVisible();
+  await sizeSort.focus();
+  await page.keyboard.press("Enter");
+  await expect(sizeSort).toHaveAttribute("aria-sort", "ascending");
+  await page.keyboard.press("Space");
+  await expect(sizeSort).toHaveAttribute("aria-sort", "descending");
 });
