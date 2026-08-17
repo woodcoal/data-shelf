@@ -212,13 +212,14 @@ type shareDefinition struct {
 	ID, Token, Password string
 	App                 *application
 	OwnerDir, Filename  string
+	Scope               string
 	Expires             time.Time
 	AllowDownload       bool
 	HTMLScriptsAllowed  bool
 	Version             [32]byte
 }
 
-func sharesFromEnv(app *application, owner string, policy directoryPolicy) ([]shareDefinition, error) {
+func (s *server) sharesFromEnv(app *application, owner string, policy directoryPolicy) ([]shareDefinition, error) {
 	e, err := readDirectoryEnv(owner, owner == app.Dir)
 	if err != nil {
 		return nil, err
@@ -249,7 +250,7 @@ func sharesFromEnv(app *application, owner string, policy directoryPolicy) ([]sh
 			}
 			return nil, errors.New("invalid share enabled")
 		}
-		if values["SCOPE"] != "file" || strings.Contains(values["PATH"], "/") || isPrivateName(values["PATH"]) {
+		if (values["SCOPE"] != "file" && values["SCOPE"] != "directory") || !validShareTargetName(values["PATH"]) {
 			return nil, errors.New("invalid share scope or path")
 		}
 		token, err := base64.RawURLEncoding.DecodeString(values["TOKEN"])
@@ -269,13 +270,54 @@ func sharesFromEnv(app *application, owner string, policy directoryPolicy) ([]sh
 			return nil, errors.New("invalid share download flag")
 		}
 		path, info, err := resolveSafePath(owner, []string{values["PATH"]})
-		if err != nil || !info.Mode().IsRegular() {
+		if err != nil || (values["SCOPE"] == "file" && !info.Mode().IsRegular()) || (values["SCOPE"] == "directory" && !info.IsDir()) {
 			return nil, errors.New("invalid share target")
 		}
+		if values["SCOPE"] == "directory" && !s.directoryShareSafe(app, path, policy) {
+			return nil, errors.New("directory share crosses a protected boundary")
+		}
 		identity := fmt.Sprintf("%s\x00%d\x00%d\x00%x", path, info.Size(), info.ModTime().UnixNano(), policy.Version)
-		result = append(result, shareDefinition{ID: id, Token: values["TOKEN"], Password: password, App: app, OwnerDir: owner, Filename: values["PATH"], Expires: expires, AllowDownload: allow, HTMLScriptsAllowed: policy.HTMLScriptsAllowed, Version: sha256.Sum256([]byte(identity))})
+		result = append(result, shareDefinition{ID: id, Token: values["TOKEN"], Password: password, App: app, OwnerDir: owner, Filename: values["PATH"], Scope: values["SCOPE"], Expires: expires, AllowDownload: allow, HTMLScriptsAllowed: policy.HTMLScriptsAllowed, Version: sha256.Sum256([]byte(identity))})
 	}
 	return result, nil
+}
+
+// directoryShareSafe rejects a directory that adds a password boundary below
+// the owner.  A share must never become a shortcut around a later, narrower
+// login rule.  This is deliberately checked again during share discovery so a
+// newly added child configuration immediately revokes the capability.
+func (s *server) directoryShareSafe(app *application, target string, ownerPolicy directoryPolicy) bool {
+	safe := true
+	_ = filepath.WalkDir(target, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || !safe {
+			return filepath.SkipDir
+		}
+		if entry.Type()&os.ModeSymlink != 0 || isPrivateName(entry.Name()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(app.Dir, path)
+		if relErr != nil {
+			safe = false
+			return filepath.SkipDir
+		}
+		segments := []string(nil)
+		if rel != "." {
+			segments = strings.Split(rel, string(filepath.Separator))
+		}
+		policy := s.resolveDirectoryPolicy(app, segments)
+		if policy.Locked || !policy.Protected || policy.Boundary != ownerPolicy.Boundary {
+			safe = false
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return safe
 }
 
 // normalizeSharePassword preserves the legacy bare share-password syntax as a
@@ -333,7 +375,7 @@ func (s *server) findShare(token string) (shareDefinition, bool) {
 			if policy.Locked {
 				return filepath.SkipDir
 			}
-			shares, err := sharesFromEnv(app, path, policy)
+			shares, err := s.sharesFromEnv(app, path, policy)
 			if err != nil {
 				return filepath.SkipDir
 			}

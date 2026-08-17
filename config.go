@@ -410,7 +410,7 @@ func loadShareStatuses(dir string, now time.Time) map[string]shareStatus {
 				return closed
 			}
 		}
-		if group.values["ENABLED"] != "true" || group.values["SCOPE"] != "file" || !validShareTargetName(group.values["PATH"]) {
+		if group.values["ENABLED"] != "true" || (group.values["SCOPE"] != "file" && group.values["SCOPE"] != "directory") || !validShareTargetName(group.values["PATH"]) {
 			return closed
 		}
 		token, err := base64.RawURLEncoding.DecodeString(group.values["TOKEN"])
@@ -440,7 +440,7 @@ func loadShareStatuses(dir string, now time.Time) map[string]shareStatus {
 }
 
 func validShareTargetName(name string) bool {
-	return name != "" && name != "." && name != ".." && !isPrivateName(name) && !strings.ContainsAny(name, "/\\\x00")
+	return name != "" && name != "." && name != ".." && utf8.ValidString(name) && !isPrivateName(name) && !strings.ContainsAny(name, "/\\\x00\r\n")
 }
 
 func parseEnvValue(text string) (string, error) {
