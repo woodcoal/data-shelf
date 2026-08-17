@@ -60,7 +60,7 @@ test.beforeAll(async () => {
   const docs = path.join(dataRoot, "docs");
   await mkdir(docs);
   const shareExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  await writeFile(path.join(docs, ".env"), "title='浏览器断言资料'\npassword='plain:浏览器断言密码123'\nSHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='page.html'\nSHARE_DOC_TOKEN='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'\nSHARE_DOC_EXPIRES_AT='" + shareExpiresAt + "'\nSHARE_DOC_PASSWORD='plain:浏览器断言密码123'\nSHARE_DOC_ALLOW_DOWNLOAD='true'\n");
+  await writeFile(path.join(docs, ".env"), "title='浏览器断言资料'\npassword='plain:浏览器断言密码123'\nSHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='page.html'\nSHARE_DOC_TOKEN='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'\nSHARE_DOC_EXPIRES_AT='" + shareExpiresAt + "'\nSHARE_DOC_PASSWORD='plain:浏览器断言密码123'\nSHARE_DOC_ALLOW_DOWNLOAD='true'\nSHARE_FOLDER_ENABLED='true'\nSHARE_FOLDER_SCOPE='directory'\nSHARE_FOLDER_PATH='目录项'\nSHARE_FOLDER_TOKEN='BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'\nSHARE_FOLDER_EXPIRES_AT='" + shareExpiresAt + "'\nSHARE_FOLDER_PASSWORD='plain:浏览器断言密码123'\nSHARE_FOLDER_ALLOW_DOWNLOAD='false'\n");
   await writeFile(path.join(docs, "page.html"), "<!doctype html><h1>受控 HTML</h1>");
   await mkdir(path.join(docs, "目录项"));
   await writeFile(path.join(docs, "alpha.bin"), Buffer.alloc(2));
@@ -140,6 +140,30 @@ test("可用分享链接复制后会向辅助技术宣布结果", async ({ page 
   }));
   await page.getByRole("button", { name: "复制链接" }).click();
   await expect(page.getByRole("status")).toHaveText("分享链接已复制。");
+});
+
+test("已授权目录可统一管理文件和文件夹分享", async ({ page }) => {
+  await signIn(page);
+  await page.getByRole("button", { name: "管理分享" }).click();
+  const dialog = page.locator("#share-management-dialog");
+  await expect(dialog).toHaveAttribute("open", "");
+  await expect(dialog.getByText("文件 · page.html")).toBeVisible();
+  await expect(dialog.getByText("文件夹 · 目录项")).toBeVisible();
+  await expect(dialog.getByText("密码：需要验证").first()).toBeVisible();
+  await expect(dialog.getByText("下载：允许")).toBeVisible();
+  await expect(dialog.getByText("下载：禁止")).toBeVisible();
+  await expect(dialog.getByRole("link", { name: "查看" }).first()).toHaveAttribute("href", /\/_s\//);
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: () => Promise.resolve() },
+  }));
+  await dialog.getByRole("button", { name: "复制链接" }).first().click();
+  await expect(dialog.getByRole("status")).toHaveText("分享链接已复制。");
+  page.once("dialog", (confirmation) => confirmation.accept());
+  await dialog.getByRole("button", { name: "删除" }).first().click();
+  await expect(dialog.getByText("文件 · page.html")).toHaveCount(0);
+  await expect(dialog.getByText("文件夹 · 目录项")).toBeVisible();
+  await expect.poll(() => readFile(path.join(dataRoot, "docs", ".env"), "utf8")).not.toContain("SHARE_DOC_TOKEN");
 });
 
 test("键盘提供跳到主要内容入口", async ({ page }) => {
