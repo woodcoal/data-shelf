@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type shareCreateRequest struct {
@@ -205,44 +206,48 @@ func (s *server) createShare(w http.ResponseWriter, r *http.Request, slug string
 	decoder.DisallowUnknownFields()
 	var input shareCreateRequest
 	if err := decoder.Decode(&input); err != nil {
-		s.shareCreateFailure(w, http.StatusBadRequest)
+		s.shareCreateFailure(w, http.StatusBadRequest, "分享参数无效")
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		s.shareCreateFailure(w, http.StatusBadRequest)
+		s.shareCreateFailure(w, http.StatusBadRequest, "分享参数无效")
 		return
 	}
-	if !validShareTarget(input.Scope, input.Path) || validatePlainPassword(input.Password) != nil {
-		s.shareCreateFailure(w, http.StatusBadRequest)
+	if passwordErr := validatePlainPassword(input.Password); passwordErr != nil {
+		s.shareCreateFailure(w, http.StatusBadRequest, sharePasswordError(input.Password))
+		return
+	}
+	if !validShareTarget(input.Scope, input.Path) {
+		s.shareCreateFailure(w, http.StatusBadRequest, "分享目标无效")
 		return
 	}
 	expires, err := time.Parse(time.RFC3339, input.ExpiresAt)
 	if err != nil || !expires.After(time.Now()) || expires.After(time.Now().Add(30*24*time.Hour)) {
-		s.shareCreateFailure(w, http.StatusBadRequest)
+		s.shareCreateFailure(w, http.StatusBadRequest, "分享有效期无效")
 		return
 	}
 	target, targetInfo, err := resolveShareTarget(owner, input.Scope, input.Path)
 	if err != nil || (input.Scope == "file" && !targetInfo.Mode().IsRegular()) || (input.Scope == "directory" && !targetInfo.IsDir()) {
-		s.shareCreateFailure(w, http.StatusBadRequest)
+		s.shareCreateFailure(w, http.StatusBadRequest, "分享目标无效")
 		return
 	}
 	if input.Scope == "directory" && !s.directoryShareSafe(app, target, policy) {
-		s.shareCreateFailure(w, http.StatusConflict)
+		s.shareCreateFailure(w, http.StatusConflict, "该目录包含独立的密码边界，不能创建目录分享")
 		return
 	}
 	password, err := hashPassword(input.Password)
 	if err != nil {
-		s.shareCreateFailure(w, http.StatusInternalServerError)
+		s.shareCreateFailure(w, http.StatusInternalServerError, "无法创建分享")
 		return
 	}
 	token, err := newShareToken()
 	if err != nil {
-		s.shareCreateFailure(w, http.StatusInternalServerError)
+		s.shareCreateFailure(w, http.StatusInternalServerError, "无法创建分享")
 		return
 	}
 	definition := shareDefinition{Token: token, Password: password, Scope: input.Scope, Filename: input.Path, Expires: expires, AllowDownload: input.AllowDownload}
 	if err := appendShareDefinition(owner, &definition); err != nil {
-		s.shareCreateFailure(w, http.StatusConflict)
+		s.shareCreateFailure(w, http.StatusConflict, "无法保存分享设置")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -276,11 +281,25 @@ func (s *server) authorizedForShareCreation(r *http.Request, app *application, p
 	return err == nil && s.sessions.valid(cookie.Value, app.Slug, policy.Version)
 }
 
-func (s *server) shareCreateFailure(w http.ResponseWriter, status int) {
+func (s *server) shareCreateFailure(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": "无法创建分享"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+func sharePasswordError(password string) string {
+	if !utf8.ValidString(password) {
+		return "分享密码不是有效文本"
+	}
+	count := utf8.RuneCountInString(password)
+	if count < 6 {
+		return "分享密码至少需要 6 位"
+	}
+	if count > 20 {
+		return "分享密码不能超过 20 位"
+	}
+	return "分享密码包含不允许的字符"
 }
 
 func newShareToken() (string, error) {

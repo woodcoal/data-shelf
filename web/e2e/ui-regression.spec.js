@@ -63,6 +63,7 @@ test.beforeAll(async () => {
   await writeFile(path.join(docs, ".env"), "title='浏览器断言资料'\npassword='plain:浏览器断言密码123'\nSHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='page.html'\nSHARE_DOC_TOKEN='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'\nSHARE_DOC_EXPIRES_AT='" + shareExpiresAt + "'\nSHARE_DOC_PASSWORD='plain:浏览器断言密码123'\nSHARE_DOC_ALLOW_DOWNLOAD='true'\nSHARE_FOLDER_ENABLED='true'\nSHARE_FOLDER_SCOPE='directory'\nSHARE_FOLDER_PATH='目录项'\nSHARE_FOLDER_TOKEN='BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBQ'\nSHARE_FOLDER_EXPIRES_AT='" + shareExpiresAt + "'\nSHARE_FOLDER_PASSWORD='plain:浏览器断言密码123'\nSHARE_FOLDER_ALLOW_DOWNLOAD='false'\nSHARE_CURRENT_ENABLED='true'\nSHARE_CURRENT_SCOPE='directory'\nSHARE_CURRENT_PATH='.'\nSHARE_CURRENT_TOKEN='CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCQ'\nSHARE_CURRENT_EXPIRES_AT='" + shareExpiresAt + "'\nSHARE_CURRENT_PASSWORD='plain:浏览器断言密码123'\nSHARE_CURRENT_ALLOW_DOWNLOAD='true'\n");
   await writeFile(path.join(docs, "page.html"), "<!doctype html><h1>受控 HTML</h1>");
   await mkdir(path.join(docs, "目录项"));
+  await writeFile(path.join(docs, "目录项", "inside.txt"), "目录分享内的资料");
   await writeFile(path.join(docs, "alpha.bin"), Buffer.alloc(2));
   await writeFile(path.join(docs, "zeta.bin"), Buffer.alloc(2048));
   await writeFile(path.join(docs, "README"), "无扩展名");
@@ -160,11 +161,44 @@ test("当前目录可创建分享，并保留权限和有效期提示", async ({
   await expect(dialog.getByLabel("分享链接")).toHaveValue(/\/_s\//);
 });
 
+test("分享设置会在浏览器拦截短密码，且不显示空白错误框", async ({ page }) => {
+  await signIn(page);
+  await page.getByRole("button", { name: "分享当前目录" }).click();
+  const dialog = page.locator("#share-dialog");
+  const error = dialog.locator("#share-error");
+  await expect(error).toBeHidden();
+  await dialog.getByLabel("访问密码").fill("12345");
+  await dialog.getByRole("button", { name: "创建链接" }).click();
+  await expect(error).toHaveText("分享密码至少需要 6 位");
+  await expect(error).toBeVisible();
+});
+
+test("移动端分享页保留授权说明、目录操作和版本", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(baseURL + "/_s/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBQ/");
+  await expect(page.getByRole("heading", { name: "访问分享" })).toBeVisible();
+  await expect(page.getByText("此链接受密码和有效期保护")).toBeVisible();
+  const password = page.getByLabel("访问密码");
+  await password.fill("浏览器断言密码123");
+  await page.getByRole("button", { name: "打开分享" }).click();
+  await expect(page).toHaveURL(/\/_directory\/$/);
+  await expect(page.getByRole("heading", { name: "分享目录" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "inside.txt" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "预览" })).toBeVisible();
+  await expect(page.locator(".page-footer")).toContainText("vdev");
+  const entry = page.locator(".entry", { has: page.getByRole("link", { name: "inside.txt" }) });
+  const entryBox = await entry.boundingBox();
+  expect(entryBox).not.toBeNull();
+  expect(entryBox.x).toBeGreaterThanOrEqual(0);
+  expect(entryBox.x + entryBox.width).toBeLessThanOrEqual(390);
+});
+
 test("已授权目录可统一管理文件、文件夹和当前目录分享", async ({ page }) => {
   await signIn(page);
   await page.getByRole("button", { name: "管理分享" }).click();
   const dialog = page.locator("#share-management-dialog");
   await expect(dialog).toHaveAttribute("open", "");
+  await expect(dialog.locator("#share-management-error")).toBeHidden();
   await expect(dialog.getByText("文件 · page.html")).toBeVisible();
   await expect(dialog.getByText("文件夹 · 目录项")).toBeVisible();
   await expect(dialog.getByText("当前目录分享").first()).toBeVisible();

@@ -1063,7 +1063,7 @@ func TestUnknownShareLookupsAreRateLimitedBeforeDiscovery(t *testing.T) {
 	unknown := "/_s/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/"
 	for attempt := 0; attempt < 5; attempt++ {
 		w := request(t, s, http.MethodGet, unknown, nil)
-		if w.Code != http.StatusNotFound || w.Header().Get("Cache-Control") != "no-store" {
+		if w.Code != http.StatusNotFound || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), "分享链接不可用") {
 			t.Fatalf("attempt %d status=%d cache=%q", attempt+1, w.Code, w.Header().Get("Cache-Control"))
 		}
 	}
