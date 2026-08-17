@@ -50,8 +50,11 @@ async function waitForService() {
 
 async function signIn(page) {
   await page.goto(baseURL + "/docs/");
-  await page.getByLabel("密码").fill("浏览器断言密码123");
-  await page.getByRole("button", { name: "进入资料" }).click();
+  const login = page.locator('form[action^="/_auth/"]');
+  if (await login.count()) {
+    await login.getByLabel("密码").fill("浏览器断言密码123");
+    await login.getByRole("button", { name: "进入资料" }).click();
+  }
   await expect(page).toHaveURL(baseURL + "/docs/");
 }
 
@@ -213,7 +216,7 @@ test("移动端分享页保留授权说明、目录操作和版本", async ({ pa
   await expect(page).toHaveURL(/\/_directory\/$/);
   await expect(page.getByRole("heading", { name: "分享目录" })).toBeVisible();
   await expect(page.getByRole("link", { name: "inside.txt" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "预览" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "预览", exact: true })).toBeVisible();
   await expect(page.locator(".page-footer")).toContainText("vdev");
   const entry = page.locator(".entry", { has: page.getByRole("link", { name: "inside.txt" }) });
   const entryBox = await entry.boundingBox();
@@ -264,10 +267,12 @@ test("分享目录复用受控预览、HTML 新窗口入口与下载行为", asy
     ["document.pdf", "PDF 预览", "/_preview/document.pdf"],
     ["note.txt", "文本预览", "/_preview/note.txt"],
   ]) {
-    await page.getByRole("link", { name }).click();
+    await page.getByRole("link", { name, exact: true }).click();
     await expect(page.locator("#preview-dialog")).toHaveAttribute("open", "");
     await expect(page.locator("#preview-kind-label")).toHaveText(kind);
-    if (kind === "文本预览") {
+    if (kind === "图片预览") {
+      await expect(page.locator("#preview-content img")).toHaveAttribute("src", new RegExp("/_s/" + token + url));
+    } else if (kind === "文本预览") {
       await expect(page.locator("#preview-content")).toContainText("受控文本");
     } else {
       await expect(page.locator("#preview-content iframe")).toHaveAttribute("src", new RegExp("/_s/" + token + url));
