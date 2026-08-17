@@ -1,5 +1,5 @@
 const { test, expect } = require("@playwright/test");
-const { mkdtemp, mkdir, readFile, rm, writeFile } = require("node:fs/promises");
+const { mkdtemp, mkdir, readFile, rm, utimes, writeFile } = require("node:fs/promises");
 const { once } = require("node:events");
 const http = require("node:http");
 const net = require("node:net");
@@ -65,6 +65,12 @@ test.beforeAll(async () => {
   await mkdir(path.join(docs, "目录项"));
   await writeFile(path.join(docs, "alpha.bin"), Buffer.alloc(2));
   await writeFile(path.join(docs, "zeta.bin"), Buffer.alloc(2048));
+  await writeFile(path.join(docs, "README"), "无扩展名");
+  await writeFile(path.join(docs, "photo.JPG"), "大写扩展名");
+  await writeFile(path.join(docs, "photo.jpg"), "小写扩展名");
+  await writeFile(path.join(docs, "notes.md"), "Markdown");
+  await utimes(path.join(docs, "alpha.bin"), new Date("2026-01-01T00:00:00Z"), new Date("2026-01-01T00:00:00Z"));
+  await utimes(path.join(docs, "zeta.bin"), new Date("2040-03-01T00:00:00Z"), new Date("2040-03-01T00:00:00Z"));
   await Promise.all(Array.from({ length: 36 }, (_, index) => writeFile(path.join(docs, "scroll-" + String(index).padStart(2, "0") + ".txt"), "滚动测试")));
   const port = await reservePort();
   baseURL = "http://127.0.0.1:" + port;
@@ -161,11 +167,28 @@ test("目录表头可稳定排序，并在长页提供滚动导航", async ({ pa
   const typeSort = page.getByRole("button", { name: "类型" });
   await typeSort.click();
   await expect(typeSort).toHaveAttribute("aria-sort", "ascending");
+  const typeOrder = await page.locator(".entry-link").allTextContents();
+  expect(typeOrder.indexOf("目录项")).toBeLessThan(typeOrder.indexOf("README"));
+  expect(typeOrder.indexOf("README")).toBeLessThan(typeOrder.indexOf("notes.md"));
+  expect(typeOrder.indexOf("photo.JPG")).toBeLessThan(typeOrder.indexOf("photo.jpg"));
+  await typeSort.click();
+  await expect(typeSort).toHaveAttribute("aria-sort", "descending");
+  const descendingTypeOrder = await page.locator(".entry-link").allTextContents();
+  expect(descendingTypeOrder.indexOf("photo.jpg")).toBeLessThan(descendingTypeOrder.indexOf("photo.JPG"));
+  expect(descendingTypeOrder.indexOf("README")).toBeLessThan(descendingTypeOrder.indexOf("目录项"));
 
   const sizeSort = page.getByRole("button", { name: "大小" });
   await sizeSort.click();
   await expect(sizeSort).toHaveAttribute("aria-sort", "ascending");
   await expect(page.locator(".entry-link").first()).toHaveText("alpha.bin");
+
+  const modifiedSort = page.getByRole("button", { name: "修改时间" });
+  await modifiedSort.click();
+  await expect(modifiedSort).toHaveAttribute("aria-sort", "ascending");
+  await expect(page.locator(".entry-link").first()).toHaveText("alpha.bin");
+  await modifiedSort.click();
+  await expect(modifiedSort).toHaveAttribute("aria-sort", "descending");
+  await expect(page.locator(".entry-link").first()).toHaveText("zeta.bin");
 
   const bottom = page.getByRole("button", { name: "前往底部" });
   await expect(bottom).toBeVisible();
@@ -184,15 +207,17 @@ test("目录表头可稳定排序，并在长页提供滚动导航", async ({ pa
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
 });
 
-test("移动端保留三项排序，并支持键盘操作", async ({ page }) => {
+test("移动端保留四项排序，并支持键盘操作", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await signIn(page);
   const nameSort = page.getByRole("button", { name: "名称" });
   const typeSort = page.getByRole("button", { name: "类型" });
   const sizeSort = page.getByRole("button", { name: "大小" });
+  const modifiedSort = page.getByRole("button", { name: "修改时间" });
   await expect(nameSort).toBeVisible();
   await expect(typeSort).toBeVisible();
   await expect(sizeSort).toBeVisible();
+  await expect(modifiedSort).toBeVisible();
   const alphaRow = page.locator(".entry", { has: page.getByRole("link", { name: "alpha.bin" }) });
   const alphaSize = alphaRow.locator(".entry-size");
   await expect(alphaSize).toBeVisible();
@@ -205,4 +230,7 @@ test("移动端保留三项排序，并支持键盘操作", async ({ page }) => 
   await expect(sizeSort).toHaveAttribute("aria-sort", "ascending");
   await page.keyboard.press("Space");
   await expect(sizeSort).toHaveAttribute("aria-sort", "descending");
+  await modifiedSort.focus();
+  await page.keyboard.press("Enter");
+  await expect(modifiedSort).toHaveAttribute("aria-sort", "ascending");
 });
