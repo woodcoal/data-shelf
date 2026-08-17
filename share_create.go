@@ -145,14 +145,14 @@ func (s *server) listManagedShares(app *application, owner string, policy direct
 		for _, field := range fields {
 			valid = valid && group.counts[field] == 1
 		}
-		if !valid || group.values["ENABLED"] != "true" || (item.Scope != "file" && item.Scope != "directory") || !validShareTargetName(item.Path) || (group.values["ALLOW_DOWNLOAD"] != "true" && group.values["ALLOW_DOWNLOAD"] != "false") {
+		if !valid || group.values["ENABLED"] != "true" || !validShareTarget(item.Scope, item.Path) || (group.values["ALLOW_DOWNLOAD"] != "true" && group.values["ALLOW_DOWNLOAD"] != "false") {
 			items = append(items, item)
 			continue
 		}
 		token, tokenErr := base64.RawURLEncoding.DecodeString(group.values["TOKEN"])
 		expires, expiresErr := time.Parse(time.RFC3339, item.ExpiresAt)
 		_, passwordErr := normalizeSharePassword(group.values["PASSWORD"])
-		target, targetInfo, targetErr := resolveSafePath(owner, []string{item.Path})
+		target, targetInfo, targetErr := resolveShareTarget(owner, item.Scope, item.Path)
 		if tokenErr != nil || len(token) != 32 || base64.RawURLEncoding.EncodeToString(token) != group.values["TOKEN"] || expiresErr != nil || expires.After(now.Add(30*24*time.Hour)) || passwordErr != nil || targetErr != nil || (item.Scope == "file" && !targetInfo.Mode().IsRegular()) || (item.Scope == "directory" && (!targetInfo.IsDir() || !s.directoryShareSafe(app, target, policy))) {
 			items = append(items, item)
 			continue
@@ -212,7 +212,7 @@ func (s *server) createShare(w http.ResponseWriter, r *http.Request, slug string
 		s.shareCreateFailure(w, http.StatusBadRequest)
 		return
 	}
-	if (input.Scope != "file" && input.Scope != "directory") || !validShareTargetName(input.Path) || validatePlainPassword(input.Password) != nil {
+	if !validShareTarget(input.Scope, input.Path) || validatePlainPassword(input.Password) != nil {
 		s.shareCreateFailure(w, http.StatusBadRequest)
 		return
 	}
@@ -221,7 +221,7 @@ func (s *server) createShare(w http.ResponseWriter, r *http.Request, slug string
 		s.shareCreateFailure(w, http.StatusBadRequest)
 		return
 	}
-	target, targetInfo, err := resolveSafePath(owner, []string{input.Path})
+	target, targetInfo, err := resolveShareTarget(owner, input.Scope, input.Path)
 	if err != nil || (input.Scope == "file" && !targetInfo.Mode().IsRegular()) || (input.Scope == "directory" && !targetInfo.IsDir()) {
 		s.shareCreateFailure(w, http.StatusBadRequest)
 		return
@@ -249,6 +249,23 @@ func (s *server) createShare(w http.ResponseWriter, r *http.Request, slug string
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]string{"share_url": "/_s/" + token + "/"})
+}
+
+// validShareTarget accepts a direct child name, or the explicit "." marker
+// for the already server-bound owner directory.  The marker cannot select a
+// file or any ancestor or sibling path.
+func validShareTarget(scope, path string) bool {
+	if scope != "file" && scope != "directory" {
+		return false
+	}
+	return scope == "directory" && path == "." || validShareTargetName(path)
+}
+
+func resolveShareTarget(owner, scope, path string) (string, os.FileInfo, error) {
+	if scope == "directory" && path == "." {
+		return resolveSafePath(owner, nil)
+	}
+	return resolveSafePath(owner, []string{path})
 }
 
 func (s *server) authorizedForShareCreation(r *http.Request, app *application, policy directoryPolicy) bool {

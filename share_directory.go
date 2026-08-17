@@ -48,7 +48,7 @@ func (s *server) shareDirectoryRoute(w http.ResponseWriter, r *http.Request, sha
 			return
 		}
 	}
-	root, rootInfo, err := resolveSafePath(share.OwnerDir, []string{share.Filename})
+	root, rootInfo, err := resolveShareTarget(share.OwnerDir, share.Scope, share.Filename)
 	if err != nil || !rootInfo.IsDir() || !s.directoryShareSafe(share.App, root, s.resolveDirectoryPolicy(share.App, ownerSegments(share.App, share.OwnerDir))) {
 		http.NotFound(w, r)
 		return
