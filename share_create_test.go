@@ -138,6 +138,65 @@ func TestDirectoryShareRejectsNestedPasswordBoundaryAndServesOnlyItsTree(t *test
 	}
 }
 
+func TestCurrentDirectoryShareUsesOnlyServerBoundOwner(t *testing.T) {
+	s, slug := makeTestServer(t, true)
+	appDir := s.apps[slug].Dir
+	owner := filepath.Join(appDir, "reports")
+	if err := os.Mkdir(owner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(owner, "inside.txt"), []byte("inside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "outside.txt"), []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	endpoint := appResourceURL(slug, "_shares", []string{"reports"})
+	cookie := login(t, s, slug)
+	payload := shareCreateRequest{Scope: "directory", Path: ".", Password: "当前目录分享密码123", ExpiresAt: time.Now().Add(24 * time.Hour).Format(time.RFC3339), AllowDownload: true}
+	if rejected := postShareCreate(t, s, endpoint, shareCreateRequest{Scope: "file", Path: ".", Password: payload.Password, ExpiresAt: payload.ExpiresAt}, cookie); rejected.Code != http.StatusBadRequest || strings.Contains(rejected.Body.String(), payload.Password) {
+		t.Fatalf("file current directory=%d body=%q", rejected.Code, rejected.Body.String())
+	}
+	created := postShareCreate(t, s, endpoint, payload, cookie)
+	if created.Code != http.StatusCreated || created.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("current directory creation=%d headers=%v body=%q", created.Code, created.Header(), created.Body.String())
+	}
+	var createdBody map[string]string
+	if err := json.Unmarshal(created.Body.Bytes(), &createdBody); err != nil {
+		t.Fatal(err)
+	}
+
+	if unauthorized := request(t, s, http.MethodGet, endpoint, nil); unauthorized.Code != http.StatusNotFound || strings.Contains(unauthorized.Body.String(), createdBody["share_url"]) {
+		t.Fatalf("unauthorized current directory list=%d body=%q", unauthorized.Code, unauthorized.Body.String())
+	}
+	listed := request(t, s, http.MethodGet, endpoint, nil, cookie)
+	var response struct {
+		Shares []shareManagementItem `json:"shares"`
+	}
+	if listed.Code != http.StatusOK || json.Unmarshal(listed.Body.Bytes(), &response) != nil || len(response.Shares) != 1 {
+		t.Fatalf("current directory list=%d body=%q", listed.Code, listed.Body.String())
+	}
+	item := response.Shares[0]
+	if item.Scope != "directory" || item.Path != "." || item.State != "available" || item.ShareURL != createdBody["share_url"] {
+		t.Fatalf("current directory item=%#v created=%#v", item, createdBody)
+	}
+
+	token := strings.TrimSuffix(strings.TrimPrefix(item.ShareURL, "/_s/"), "/")
+	auth := httptest.NewRequest(http.MethodPost, "/_s/"+token+"/_auth", strings.NewReader("password="+url.QueryEscape(payload.Password)))
+	auth.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	auth.RemoteAddr = "127.0.0.1:43210"
+	authResult := httptest.NewRecorder()
+	s.ServeHTTP(authResult, auth)
+	if authResult.Code != http.StatusSeeOther || authResult.Header().Get("Location") != shareDirectoryURL(token, nil, true) {
+		t.Fatalf("current directory auth=%d location=%q", authResult.Code, authResult.Header().Get("Location"))
+	}
+	listing := request(t, s, http.MethodGet, shareDirectoryURL(token, nil, true), nil, authResult.Result().Cookies()[0])
+	if listing.Code != http.StatusOK || !strings.Contains(listing.Body.String(), "inside.txt") || strings.Contains(listing.Body.String(), "outside.txt") {
+		t.Fatalf("current directory listing=%d body=%q", listing.Code, listing.Body.String())
+	}
+}
+
 func TestAuthorizedShareManagementListsAndRevokesShareSessions(t *testing.T) {
 	s, slug := makeTestServer(t, true)
 	appDir := s.apps[slug].Dir

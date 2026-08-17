@@ -250,7 +250,7 @@ func (s *server) sharesFromEnv(app *application, owner string, policy directoryP
 			}
 			return nil, errors.New("invalid share enabled")
 		}
-		if (values["SCOPE"] != "file" && values["SCOPE"] != "directory") || !validShareTargetName(values["PATH"]) {
+		if !validShareTarget(values["SCOPE"], values["PATH"]) {
 			return nil, errors.New("invalid share scope or path")
 		}
 		token, err := base64.RawURLEncoding.DecodeString(values["TOKEN"])
@@ -269,7 +269,7 @@ func (s *server) sharesFromEnv(app *application, owner string, policy directoryP
 		if !allow && values["ALLOW_DOWNLOAD"] != "false" {
 			return nil, errors.New("invalid share download flag")
 		}
-		path, info, err := resolveSafePath(owner, []string{values["PATH"]})
+		path, info, err := resolveShareTarget(owner, values["SCOPE"], values["PATH"])
 		if err != nil || (values["SCOPE"] == "file" && !info.Mode().IsRegular()) || (values["SCOPE"] == "directory" && !info.IsDir()) {
 			return nil, errors.New("invalid share target")
 		}
