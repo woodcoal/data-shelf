@@ -164,6 +164,16 @@ test("当前目录可创建分享，并保留权限和有效期提示", async ({
   await response;
   await expect(dialog.getByText("分享链接已创建。")).toBeVisible();
   await expect(dialog.getByLabel("分享链接")).toHaveValue(/\/_s\//);
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: () => Promise.reject(new DOMException("denied", "NotAllowedError")) },
+  }));
+  await dialog.getByRole("button", { name: "复制链接" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("浏览器拒绝了剪贴板权限。已选中链接文本，请手动按 Ctrl/Cmd+C。");
+  await expect.poll(() => page.evaluate(() => {
+    const input = document.getElementById("share-url");
+    return input.selectionStart === 0 && input.selectionEnd === input.value.length;
+  })).toBe(true);
 });
 
 test("复制链接会降级并选中文本，桌面端和移动端都有明确反馈", async ({ page }) => {
@@ -186,7 +196,7 @@ test("复制链接会降级并选中文本，桌面端和移动端都有明确�
       document.execCommand = () => false;
     });
     await dialog.getByRole("button", { name: "复制链接" }).click();
-    await expect(dialog.getByRole("status")).toHaveText("复制失败，已选中链接，请手动复制。");
+    await expect(dialog.getByRole("status")).toHaveText("无法写入剪贴板。已选中链接文本，请手动按 Ctrl/Cmd+C。");
     await expect(dialog.getByLabel("分享链接")).toBeFocused();
     await expect(dialog.getByLabel("分享链接")).toHaveJSProperty("selectionStart", 0);
     await page.reload();
@@ -244,6 +254,14 @@ test("已授权目录可统一管理文件、文件夹和当前目录分享", as
   }));
   await dialog.getByRole("button", { name: "复制链接" }).first().click();
   await expect(dialog.getByRole("status")).toHaveText("分享链接已复制。");
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: () => Promise.reject(new DOMException("denied", "NotAllowedError")) },
+  }));
+  const managedURL = await dialog.locator(".share-management-item-link span").nth(1).textContent();
+  await dialog.getByRole("button", { name: "复制链接" }).first().click();
+  await expect(dialog.getByRole("status")).toHaveText("浏览器拒绝了剪贴板权限。已选中链接文本，请手动按 Ctrl/Cmd+C。");
+  await expect.poll(() => page.evaluate(() => window.getSelection().toString())).toBe(managedURL);
   page.once("dialog", (confirmation) => confirmation.accept());
   const fileShare = dialog.locator(".share-management-item", { hasText: "文件 · page.html" });
   await fileShare.getByRole("button", { name: "删除" }).click();
@@ -274,6 +292,8 @@ test("分享目录复用受控预览、HTML 新窗口入口与下载行为", asy
       await expect(page.locator("#preview-content img")).toHaveAttribute("src", new RegExp("/_s/" + token + url));
     } else if (kind === "文本预览") {
       await expect(page.locator("#preview-content")).toContainText("受控文本");
+    } else if (kind === "图片预览") {
+      await expect(page.locator("#preview-content img")).toHaveAttribute("src", new RegExp("/_s/" + token + url));
     } else {
       await expect(page.locator("#preview-content iframe")).toHaveAttribute("src", new RegExp("/_s/" + token + url));
     }
