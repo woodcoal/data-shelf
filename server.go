@@ -274,7 +274,7 @@ func (s *server) serveApplicationRoute(w http.ResponseWriter, r *http.Request, s
 			s.htmlContent(w, r, slug, segments[1:])
 			return
 		case "_shares":
-			s.createShare(w, r, slug, trimTrailingEmpty(segments[1:]))
+			s.manageShares(w, r, slug, trimTrailingEmpty(segments[1:]))
 			return
 		default:
 			http.NotFound(w, r)

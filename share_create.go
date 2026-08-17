@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,158 @@ type shareCreateRequest struct {
 	Password      string `json:"password"`
 	ExpiresAt     string `json:"expires_at"`
 	AllowDownload bool   `json:"allow_download"`
+}
+
+// shareManagementItem is returned only to the authenticated owner of the
+// directory.  The ID is an opaque configuration selector, not a credential;
+// no password or password hash is ever returned.
+type shareManagementItem struct {
+	ID               string `json:"id"`
+	Scope            string `json:"scope"`
+	Path             string `json:"path"`
+	State            string `json:"state"`
+	RequiresPassword bool   `json:"requires_password"`
+	ExpiresAt        string `json:"expires_at"`
+	CanDownload      bool   `json:"can_download"`
+	ShareURL         string `json:"share_url,omitempty"`
+}
+
+// manageShares keeps all mutating share configuration behind the same
+// directory-scoped application session as creation.  The list and delete
+// response deliberately use 404 when unauthorized so no capability metadata
+// is revealed to an unauthenticated caller.
+func (s *server) manageShares(w http.ResponseWriter, r *http.Request, slug string, ownerSegments []string) {
+	if r.Method == http.MethodPost {
+		s.createShare(w, r, slug, ownerSegments)
+		return
+	}
+	app, ok := s.app(slug)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	policy := s.resolveDirectoryPolicy(app, ownerSegments)
+	if !s.authorizedForShareCreation(r, app, policy) {
+		http.NotFound(w, r)
+		return
+	}
+	owner, ownerInfo, err := resolveSafePath(app.Dir, ownerSegments)
+	if err != nil || !ownerInfo.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		if r.URL.RawQuery != "" {
+			http.NotFound(w, r)
+			return
+		}
+		items, err := s.listManagedShares(app, owner, policy, time.Now())
+		if err != nil {
+			shareManagementFailure(w, http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "private, no-store")
+		_ = json.NewEncoder(w).Encode(map[string]any{"shares": items})
+	case http.MethodDelete:
+		ids, ok := r.URL.Query()["id"]
+		if !ok || len(ids) != 1 || !validShareID(ids[0]) {
+			http.NotFound(w, r)
+			return
+		}
+		if err := removeShareDefinition(owner, ids[0]); err != nil {
+			shareManagementFailure(w, http.StatusConflict)
+			return
+		}
+		// Share discovery reads .env for every request.  Once this atomic rewrite
+		// completes, findShare no longer returns this token, so all old share
+		// cookies are rejected before their session value is considered.
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func shareManagementFailure(w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "无法管理分享"})
+}
+
+func (s *server) listManagedShares(app *application, owner string, policy directoryPolicy, now time.Time) ([]shareManagementItem, error) {
+	env, err := readDirectoryEnv(owner, owner == app.Dir)
+	if err != nil {
+		return nil, err
+	}
+	if env.doc.keyCount["SHARE_ENABLED"] != 1 || env.doc.values["SHARE_ENABLED"] != "true" {
+		return []shareManagementItem{}, nil
+	}
+	type candidate struct {
+		values map[string]string
+		counts map[string]int
+	}
+	groups := make(map[string]*candidate)
+	for key, value := range env.doc.values {
+		parsed := parseShareKey(key)
+		if parsed == (shareKey{}) {
+			continue
+		}
+		group := groups[parsed.id]
+		if group == nil {
+			group = &candidate{values: make(map[string]string), counts: make(map[string]int)}
+			groups[parsed.id] = group
+		}
+		group.values[parsed.field] = value
+		group.counts[parsed.field] = env.doc.keyCount[key]
+	}
+	items := make([]shareManagementItem, 0, len(groups))
+	for id, group := range groups {
+		item := shareManagementItem{ID: id, State: "invalid"}
+		item.Scope, item.Path = group.values["SCOPE"], group.values["PATH"]
+		item.ExpiresAt = group.values["EXPIRES_AT"]
+		item.CanDownload = group.values["ALLOW_DOWNLOAD"] == "true"
+		if group.counts["ENABLED"] == 1 && group.values["ENABLED"] == "false" {
+			item.State = "disabled"
+			items = append(items, item)
+			continue
+		}
+		fields := []string{"ENABLED", "SCOPE", "PATH", "TOKEN", "EXPIRES_AT", "PASSWORD", "ALLOW_DOWNLOAD"}
+		valid := true
+		for _, field := range fields {
+			valid = valid && group.counts[field] == 1
+		}
+		if !valid || group.values["ENABLED"] != "true" || (item.Scope != "file" && item.Scope != "directory") || !validShareTargetName(item.Path) || (group.values["ALLOW_DOWNLOAD"] != "true" && group.values["ALLOW_DOWNLOAD"] != "false") {
+			items = append(items, item)
+			continue
+		}
+		token, tokenErr := base64.RawURLEncoding.DecodeString(group.values["TOKEN"])
+		expires, expiresErr := time.Parse(time.RFC3339, item.ExpiresAt)
+		_, passwordErr := normalizeSharePassword(group.values["PASSWORD"])
+		target, targetInfo, targetErr := resolveSafePath(owner, []string{item.Path})
+		if tokenErr != nil || len(token) != 32 || base64.RawURLEncoding.EncodeToString(token) != group.values["TOKEN"] || expiresErr != nil || expires.After(now.Add(30*24*time.Hour)) || passwordErr != nil || targetErr != nil || (item.Scope == "file" && !targetInfo.Mode().IsRegular()) || (item.Scope == "directory" && (!targetInfo.IsDir() || !s.directoryShareSafe(app, target, policy))) {
+			items = append(items, item)
+			continue
+		}
+		item.RequiresPassword = true
+		item.ExpiresAt = expires.UTC().Format(time.RFC3339)
+		if expires.After(now) {
+			item.State = "available"
+			item.ShareURL = "/_s/" + group.values["TOKEN"] + "/"
+		} else {
+			item.State = "expired"
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Path != items[j].Path {
+			return items[i].Path < items[j].Path
+		}
+		return items[i].ID < items[j].ID
+	})
+	return items, nil
 }
 
 // createShare accepts only a server-bound owner directory.  It deliberately
@@ -206,6 +359,50 @@ func appendShareDefinition(dir string, definition *shareDefinition) error {
 			return errors.New("share configuration exceeds size limit")
 		}
 		return replaceFileIfUnchanged(path, raw, updated, info.Mode().Perm())
+	}
+	return errors.New("share configuration changed")
+}
+
+// removeShareDefinition deletes exactly one complete SHARE_<ID>_* group while
+// preserving unrelated configuration and comments.  The compare-before-rename
+// write means a concurrent configuration change cannot be silently lost.
+func removeShareDefinition(dir, id string) error {
+	path := filepath.Join(dir, ".env")
+	for attempt := 0; attempt < 2; attempt++ {
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("invalid share configuration file")
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		doc, err := parseEnv(raw)
+		if err != nil {
+			return err
+		}
+		removed := false
+		lines := make([]string, 0, len(doc.lines))
+		for _, line := range doc.lines {
+			key, _, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if ok && parseShareKey(strings.TrimSpace(key)).id == id {
+				removed = true
+				continue
+			}
+			lines = append(lines, line)
+		}
+		if !removed {
+			return errors.New("share definition is missing")
+		}
+		updated := []byte(strings.Join(lines, "\n"))
+		if len(updated) != 0 {
+			updated = append(updated, '\n')
+		}
+		if err := replaceFileIfUnchanged(path, raw, updated, info.Mode().Perm()); err == nil {
+			return nil
+		} else if err.Error() != "configuration changed during migration" {
+			return err
+		}
 	}
 	return errors.New("share configuration changed")
 }
