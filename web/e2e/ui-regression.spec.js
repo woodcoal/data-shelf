@@ -62,6 +62,10 @@ test.beforeAll(async () => {
   const shareExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   await writeFile(path.join(docs, ".env"), "title='浏览器断言资料'\npassword='plain:浏览器断言密码123'\nSHARE_ENABLED='true'\nSHARE_DOC_ENABLED='true'\nSHARE_DOC_SCOPE='file'\nSHARE_DOC_PATH='page.html'\nSHARE_DOC_TOKEN='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'\nSHARE_DOC_EXPIRES_AT='" + shareExpiresAt + "'\nSHARE_DOC_PASSWORD='plain:浏览器断言密码123'\nSHARE_DOC_ALLOW_DOWNLOAD='true'\n");
   await writeFile(path.join(docs, "page.html"), "<!doctype html><h1>受控 HTML</h1>");
+  await mkdir(path.join(docs, "目录项"));
+  await writeFile(path.join(docs, "alpha.bin"), Buffer.alloc(2));
+  await writeFile(path.join(docs, "zeta.bin"), Buffer.alloc(2048));
+  await Promise.all(Array.from({ length: 36 }, (_, index) => writeFile(path.join(docs, "scroll-" + String(index).padStart(2, "0") + ".txt"), "滚动测试")));
   const port = await reservePort();
   baseURL = "http://127.0.0.1:" + port;
   service = spawn("go", ["run", ".", "-dir", dataRoot, "-host", "127.0.0.1", "-port", String(port)], {
@@ -139,4 +143,36 @@ test("键盘提供跳到主要内容入口", async ({ page }) => {
   await expect(skipLink).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.locator("#content")).toBeFocused();
+});
+
+test("目录表头可稳定排序，并在长页提供滚动导航", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 700 });
+  await signIn(page);
+  const nameSort = page.getByRole("button", { name: "名称" });
+  await expect(nameSort).toHaveAttribute("aria-sort", "none");
+  await nameSort.click();
+  await expect(nameSort).toHaveAttribute("aria-sort", "ascending");
+  await expect(page.locator(".entry-link").first()).toHaveText("alpha.bin");
+  await nameSort.click();
+  await expect(nameSort).toHaveAttribute("aria-sort", "descending");
+  expect(await page.locator(".entry-link").allTextContents()).toEqual(expect.arrayContaining(["zeta.bin", "alpha.bin"]));
+  expect(await page.locator(".entry-link").evaluateAll((links) => links.findIndex((link) => link.textContent === "zeta.bin") < links.findIndex((link) => link.textContent === "alpha.bin"))).toBe(true);
+
+  const typeSort = page.getByRole("button", { name: "类型" });
+  await typeSort.click();
+  await expect(typeSort).toHaveAttribute("aria-sort", "ascending");
+
+  const sizeSort = page.getByRole("button", { name: "大小" });
+  await sizeSort.click();
+  await expect(sizeSort).toHaveAttribute("aria-sort", "ascending");
+  await expect(page.locator(".entry-link").first()).toHaveText("alpha.bin");
+
+  const bottom = page.getByRole("button", { name: "前往底部" });
+  await expect(bottom).toBeVisible();
+  await bottom.click();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  const top = page.getByRole("button", { name: "返回顶部" });
+  await expect(top).toBeVisible();
+  await top.click();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
 });
