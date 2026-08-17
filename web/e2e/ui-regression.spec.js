@@ -70,6 +70,8 @@ test.beforeAll(async () => {
   await writeFile(path.join(docs, "photo.JPG"), "大写扩展名");
   await writeFile(path.join(docs, "photo.jpg"), "小写扩展名");
   await writeFile(path.join(docs, "notes.md"), "Markdown");
+  await writeFile(path.join(docs, "document.pdf"), "%PDF-1.4\n% 受控 PDF\n");
+  await writeFile(path.join(docs, "note.txt"), "受控文本");
   await utimes(path.join(docs, "alpha.bin"), new Date("2026-01-01T00:00:00Z"), new Date("2026-01-01T00:00:00Z"));
   await utimes(path.join(docs, "zeta.bin"), new Date("2040-03-01T00:00:00Z"), new Date("2040-03-01T00:00:00Z"));
   await Promise.all(Array.from({ length: 36 }, (_, index) => writeFile(path.join(docs, "scroll-" + String(index).padStart(2, "0") + ".txt"), "滚动测试")));
@@ -161,6 +163,33 @@ test("当前目录可创建分享，并保留权限和有效期提示", async ({
   await expect(dialog.getByLabel("分享链接")).toHaveValue(/\/_s\//);
 });
 
+test("复制链接会降级并选中文本，桌面端和移动端都有明确反馈", async ({ page }) => {
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await signIn(page);
+    await page.getByRole("button", { name: "分享当前目录" }).click();
+    const dialog = page.locator("#share-dialog");
+    await dialog.getByLabel("访问密码").fill("复制测试密码123");
+    await dialog.getByRole("button", { name: "创建链接" }).click();
+    await expect(dialog.getByLabel("分享链接")).toHaveValue(/\/_s\//);
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: () => Promise.reject(new Error("denied")) },
+      });
+      document.execCommand = () => false;
+    });
+    await dialog.getByRole("button", { name: "复制链接" }).click();
+    await expect(dialog.getByRole("status")).toHaveText("复制失败，已选中链接，请手动复制。");
+    await expect(dialog.getByLabel("分享链接")).toBeFocused();
+    await expect(dialog.getByLabel("分享链接")).toHaveJSProperty("selectionStart", 0);
+    await page.reload();
+  }
+});
+
 test("分享设置会在浏览器拦截短密码，且不显示空白错误框", async ({ page }) => {
   await signIn(page);
   await page.getByRole("button", { name: "分享当前目录" }).click();
@@ -218,6 +247,45 @@ test("已授权目录可统一管理文件、文件夹和当前目录分享", as
   await expect(dialog.getByText("文件 · page.html")).toHaveCount(0);
   await expect(dialog.getByText("文件夹 · 目录项")).toBeVisible();
   await expect.poll(() => readFile(path.join(dataRoot, "docs", ".env"), "utf8")).not.toContain("SHARE_DOC_TOKEN");
+});
+
+test("分享目录复用受控预览、HTML 新窗口入口与下载行为", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const token = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCQ";
+  const directoryURL = baseURL + "/_s/" + token + "/_directory/";
+  await page.goto(baseURL + "/_s/" + token + "/");
+  await page.getByLabel("访问密码").fill("浏览器断言密码123");
+  await page.getByRole("button", { name: "打开分享" }).click();
+  await expect(page).toHaveURL(directoryURL);
+
+  for (const [name, kind, url] of [
+    ["photo.jpg", "图片预览", "/_preview/photo.jpg"],
+    ["notes.md", "Markdown 文档", "/_preview/notes.md"],
+    ["document.pdf", "PDF 预览", "/_preview/document.pdf"],
+    ["note.txt", "文本预览", "/_preview/note.txt"],
+  ]) {
+    await page.getByRole("link", { name }).click();
+    await expect(page.locator("#preview-dialog")).toHaveAttribute("open", "");
+    await expect(page.locator("#preview-kind-label")).toHaveText(kind);
+    if (kind === "文本预览") {
+      await expect(page.locator("#preview-content")).toContainText("受控文本");
+    } else {
+      await expect(page.locator("#preview-content iframe")).toHaveAttribute("src", new RegExp("/_s/" + token + url));
+    }
+    await page.getByRole("button", { name: "关闭预览" }).click();
+  }
+
+  const htmlRow = page.locator(".entry", { has: page.getByRole("link", { name: "page.html" }) });
+  await htmlRow.getByRole("button", { name: "预览源码" }).click();
+  await expect(page.locator("#preview-dialog")).toHaveAttribute("open", "");
+  await expect(page.locator("#preview-open")).toHaveAttribute("href", new RegExp("/_s/" + token + "/_html/page\\.html"));
+  await expect(page.locator("#preview-open")).toHaveAttribute("target", "_blank");
+  await expect(page.locator("#preview-open")).toHaveAttribute("rel", "noopener noreferrer");
+  await page.getByRole("button", { name: "关闭预览" }).click();
+
+  const download = htmlRow.getByRole("link", { name: "下载" });
+  await expect(download).toHaveAttribute("download", "");
+  await expect(download).toHaveAttribute("href", new RegExp("/_s/" + token + "/_download/page\\.html"));
 });
 
 test("键盘提供跳到主要内容入口", async ({ page }) => {

@@ -13,9 +13,9 @@ import (
 )
 
 type shareDirectoryItem struct {
-	Name, URL, DownloadURL string
-	IsDirectory            bool
-	Previewable            bool
+	Name, URL, PreviewURL, OpenURL, DownloadURL string
+	PreviewKind, OpenKind, OpenMode             string
+	IsDirectory, CanZoom                        bool
 }
 
 func shareDirectoryURL(token string, segments []string, directory bool) string {
@@ -153,23 +153,35 @@ func (s *server) shareDirectoryListing(w http.ResponseWriter, r *http.Request, t
 		}
 		child := append(append([]string{}, relative...), item.Name())
 		if info.IsDir() {
-			items = append(items, shareDirectoryItem{Name: item.Name(), URL: shareDirectoryURL(token, child, true), IsDirectory: true})
+			items = append(items, shareDirectoryItem{Name: item.Name(), URL: shareDirectoryURL(token, child, true), IsDirectory: true, OpenKind: "directory", OpenMode: "navigate"})
 			continue
 		}
-		kind, _ := previewFor(item.Name(), info)
-		href := ""
-		if isHTMLName(item.Name()) {
-			href = shareDirectoryResourceURL(token, "_html", child)
-		} else if kind != "none" {
-			href = shareDirectoryResourceURL(token, "_preview", child)
-		} else if allowDownload {
-			href = shareDirectoryResourceURL(token, "_download", child)
-		}
+		kind, openMode := previewFor(item.Name(), info)
+		preview := ""
+		open := ""
 		download := ""
-		if allowDownload && href != shareDirectoryResourceURL(token, "_download", child) {
+		openKind := "download"
+		if kind != "none" {
+			preview = shareDirectoryResourceURL(token, "_preview", child)
+			open = preview
+			openKind = "file"
+			if isHTMLName(item.Name()) {
+				open = shareDirectoryResourceURL(token, "_html", child)
+				openKind = "html-render"
+			}
+		}
+		if allowDownload {
 			download = shareDirectoryResourceURL(token, "_download", child)
 		}
-		items = append(items, shareDirectoryItem{Name: item.Name(), URL: href, DownloadURL: download, Previewable: kind != "none"})
+		if kind == "none" {
+			if !allowDownload {
+				openMode = "none"
+			} else {
+				openMode = "download"
+				open = download
+			}
+		}
+		items = append(items, shareDirectoryItem{Name: item.Name(), URL: open, PreviewURL: preview, OpenURL: open, DownloadURL: download, PreviewKind: kind, OpenKind: openKind, OpenMode: openMode, CanZoom: kind == "image"})
 	}
 	sort.Slice(items, func(i, j int) bool { return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name) })
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
