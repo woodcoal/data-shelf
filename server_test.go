@@ -728,8 +728,8 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 		`HTML 源码预览`, `>预览源码</button>`,
 		`openLink.textContent=trigger.dataset.openKind==="html-render"?"受控视图":"新窗口打开"`,
 		`data-share-state="available"`, `data-share-url="/_s/capability-token/"`, `preview-share-status`, `preview-share-open`, `preview-share-copy`, `已配置分享`,
-		`data-share-create-url="/docs/_shares"`, `data-share-target-name="guide.html"`, `data-share-scope="file"`, `data-share-target-name="reports"`, `data-share-scope="directory"`, `id="share-dialog"`, `id="share-password"`, `id="share-expires-at"`, `id="share-allow-download"`, `id="share-copy"`,
-		`scope:current.scope,path:current.name,password:password.value,expires_at:expiry.toISOString(),allow_download:allowDownload.checked`, `payload.share_url`, `shared.pathname.indexOf("/_s/")!==0`,
+		`data-share-create-url="/docs/_shares"`, `data-share-target-name="."`, `data-share-scope="directory"`, `data-share-current-directory="true"`, `分享当前目录`, `data-share-target-name="guide.html"`, `data-share-scope="file"`, `data-share-target-name="reports"`, `id="share-dialog"`, `id="share-password"`, `id="share-expires-at"`, `id="share-allow-download"`, `id="share-copy"`,
+		`currentDirectory:trigger.dataset.shareCurrentDirectory==="true"`, `当前目录分享`, `scope:current.scope,path:current.name,password:password.value,expires_at:expiry.toISOString(),allow_download:allowDownload.checked`, `payload.share_url`, `shared.pathname.indexOf("/_s/")!==0`,
 		`allow-popups allow-popups-to-escape-sandbox`,
 	} {
 		if !strings.Contains(rendered, want) {
