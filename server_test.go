@@ -709,11 +709,13 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 	s, _ := makeTestServer(t, false)
 	var body strings.Builder
 	err := s.pages.ExecuteTemplate(&body, "directory", map[string]any{
+		"ShareCreateURL": "/docs/_shares",
 		"Items": []directoryItem{{
 			Name: "guide.html", URL: "/guide.html", PreviewKind: "text", OpenKind: "html-render", OpenMode: "modal",
 			PreviewURL: "/_preview/docs/guide.html", OpenURL: "/docs/_html/guide.html", DownloadURL: "/docs/_download/guide.html",
-			Share: shareStatus{State: "available", RequiresPassword: true, ExpiresAt: "2026-08-11T00:00:00Z", CanDownload: false, ShareURL: "/_s/capability-token/"},
-		}},
+			ShareScope: "file",
+			Share:      shareStatus{State: "available", RequiresPassword: true, ExpiresAt: "2026-08-11T00:00:00Z", CanDownload: false, ShareURL: "/_s/capability-token/"},
+		}, {Name: "reports", URL: "/reports/", OpenKind: "directory", ShareScope: "directory"}},
 	})
 	if err != nil {
 		t.Fatalf("render preview actions: %v", err)
@@ -726,6 +728,8 @@ func TestDirectoryTemplateRendersOnlyServerProvidedPreviewActions(t *testing.T) 
 		`HTML 源码预览`, `>预览源码</button>`,
 		`openLink.textContent=trigger.dataset.openKind==="html-render"?"受控视图":"新窗口打开"`,
 		`data-share-state="available"`, `data-share-url="/_s/capability-token/"`, `preview-share-status`, `preview-share-open`, `preview-share-copy`, `已配置分享`,
+		`data-share-create-url="/docs/_shares"`, `data-share-target-name="guide.html"`, `data-share-scope="file"`, `data-share-target-name="reports"`, `data-share-scope="directory"`, `id="share-dialog"`, `id="share-password"`, `id="share-expires-at"`, `id="share-allow-download"`, `id="share-copy"`,
+		`scope:current.scope,path:current.name,password:password.value,expires_at:expiry.toISOString(),allow_download:allowDownload.checked`, `payload.share_url`, `shared.pathname.indexOf("/_s/")!==0`,
 		`allow-popups allow-popups-to-escape-sandbox`,
 	} {
 		if !strings.Contains(rendered, want) {
@@ -821,6 +825,17 @@ func TestDirectoryPublishesOnlyServerAuthoredPreviewAndShareCapabilities(t *test
 	}
 	if strings.Contains(body, protectedHash(t)) || strings.Contains(body, "SHARE_DOC") {
 		t.Error("directory response leaked a share secret or management identifier")
+	}
+}
+
+func TestPublicDirectoryDoesNotPublishShareCreationControls(t *testing.T) {
+	public, publicSlug := makeTestServer(t, false)
+	publicPage := request(t, public, http.MethodGet, appURL(publicSlug, nil, true), nil)
+	if publicPage.Code != http.StatusOK {
+		t.Fatalf("public directory status=%d", publicPage.Code)
+	}
+	if strings.Contains(publicPage.Body.String(), `data-share-create-url=`) || strings.Contains(publicPage.Body.String(), `data-share-target-name=`) {
+		t.Error("public directory exposed share creation controls")
 	}
 }
 

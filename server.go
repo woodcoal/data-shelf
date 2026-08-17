@@ -48,6 +48,7 @@ type directoryItem struct {
 	Name, URL, Kind, Size, Modified                      string
 	PreviewKind, OpenKind, OpenMode, PreviewURL, OpenURL string
 	DownloadURL                                          string
+	ShareScope                                           string
 	CanZoom, CanNavigateImages                           bool
 	PreviousImage, NextImage                             *imageNavigation
 	Share                                                shareStatus
@@ -653,8 +654,10 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 			openKind = "file"
 		}
 		kind, size := "文件", humanSize(info.Size())
+		shareScope := "file"
 		if info.IsDir() {
 			kind, size = "目录", ""
+			shareScope = "directory"
 		}
 		share := shareStatus{State: "disabled"}
 		if configured, ok := shares[entry.Name()]; ok {
@@ -667,7 +670,7 @@ func (s *server) serveDirectory(w http.ResponseWriter, r *http.Request, app *app
 			// The template consumes only server-generated capabilities. In particular,
 			// DownloadURL uses the authenticated attachment endpoint rather than the
 			// file's browse URL, so the browser cannot choose an unsafe disposition.
-			OpenURL: openResourceURL, DownloadURL: downloadResourceURL, CanZoom: previewKind == "image", Share: share,
+			OpenURL: openResourceURL, DownloadURL: downloadResourceURL, ShareScope: shareScope, CanZoom: previewKind == "image", Share: share,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
