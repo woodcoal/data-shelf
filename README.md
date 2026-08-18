@@ -90,7 +90,7 @@ CGO_ENABLED=0 go build -trimpath -o datashelf .
 跨平台构建、校验、systemd/launchd/Windows 常驻运行和卸载说明见
 [`docs/RELEASE.md`](docs/RELEASE.md)。运行 `./scripts/build-release.sh` 会在
 `dist/` 生成 Linux amd64、macOS amd64、macOS arm64 和 Windows amd64 四个
-`datashelf-v1.26.817-*` 产物及 `SHA256SUMS-v1.26.817`。
+`datashelf-v1.26.818-*` 产物及 `SHA256SUMS-v1.26.818`。
 
 每次请求都会重新发现第一层应用目录；根目录不可读取时返回 503，而不会回退到陈旧列表。页面使用构建内嵌、内容指纹化的 `/_assets/` CSS/JS：指纹资源以一年 `immutable` 缓存和强 ETag 输出，二进制更新会生成新 URL；页面与受保护内容保持不可存储。
 

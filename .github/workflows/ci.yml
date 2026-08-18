@@ -26,6 +26,6 @@ jobs:
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: datashelf-release-v1.26.817-${{ github.sha }}
+          name: datashelf-release-v1.26.818-${{ github.sha }}
           path: dist/
           if-no-files-found: error
